@@ -131,7 +131,7 @@ function Login() {
           <div className="text-center">
             <p className="mb-2 text-muted small">New staff member?</p>
             <Link to="/register" className="btn btn-outline-secondary btn-sm">
-              Request Admin Access
+              Create Account
             </Link>
           </div>
         </div>

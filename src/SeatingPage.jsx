@@ -14,11 +14,13 @@ function SeatingPage() {
   const { eventId } = useParams();
   const navigate = useNavigate();
 
+  // State
   const [eventName, setEventName] = useState("Loading...");
   const [bookedSeats, setBookedSeats] = useState({});
   const [selectedSeat, setSelectedSeat] = useState(null);
   const [hoverInfo, setHoverInfo] = useState(null);
 
+  // Modal Inputs
   const [studentName, setStudentName] = useState("");
   const [studentContact, setStudentContact] = useState("");
 
@@ -36,7 +38,7 @@ function SeatingPage() {
     { id: 8, left: [148, 159], right: [160, 171] },
     { id: 9, left: [172, 183], right: [184, 195] },
 
-    // --- GAP INSERTED BY CODE BELOW ---
+    // --- GAP INSERTED BY CODE ---
 
     { id: 10, left: [196, 207], right: [208, 219] },
     { id: 11, left: [220, 231], right: [232, 243] }, // Contains 230
@@ -51,12 +53,14 @@ function SeatingPage() {
     { id: 20, left: [436, 447], right: null },
   ];
 
+  // Helper: Handle 34(a) and 34(b)
   const getSeatLabel = (rowId, num) => {
     if (rowId === 2 && num === 34) return "34(a)";
     if (rowId === 3 && num === 34) return "34(b)";
     return num.toString();
   };
 
+  // Helper: Generate seat objects
   const generateSeats = (rowId, range, isRightSide) => {
     if (!range) return [];
     const [start, end] = range;
@@ -73,6 +77,9 @@ function SeatingPage() {
     return seats;
   };
 
+  // ----------------------------------------------------------------
+  // 2. DATA FETCHING
+  // ----------------------------------------------------------------
   useEffect(() => {
     getDoc(doc(db, "events", eventId)).then((docSnap) => {
       if (docSnap.exists()) setEventName(docSnap.data().name);
@@ -91,8 +98,11 @@ function SeatingPage() {
     return () => unsubscribe();
   }, [eventId]);
 
+  // ----------------------------------------------------------------
+  // 3. HANDLERS
+  // ----------------------------------------------------------------
   const handleSeatClick = (seat) => {
-    // Safety check (though UI prevents clicking)
+    // Safety check for blackout seats
     if (seat.num === 230 || seat.num === 285) return;
 
     if (bookedSeats[seat.uniqueId]) {
@@ -126,99 +136,128 @@ function SeatingPage() {
     }
   };
 
+  // ----------------------------------------------------------------
+  // 4. RENDER UI
+  // ----------------------------------------------------------------
   return (
     <div className="container-fluid py-4 bg-light min-vh-100 d-flex flex-column align-items-center">
       {/* HEADER */}
       <div
-        className="w-100 d-flex justify-content-between align-items-center mb-4 px-4 sticky-top bg-light py-2 shadow-sm"
+        className="w-100 d-flex justify-content-between align-items-center mb-4 px-3 sticky-top bg-light py-2 shadow-sm"
         style={{ zIndex: 10 }}
       >
         <button
           onClick={() => navigate("/home")}
-          className="btn btn-outline-dark"
+          className="btn btn-outline-dark btn-sm"
         >
           ← Back
         </button>
-        <h4 className="fw-bold m-0">{eventName}</h4>
-        <div className="d-flex gap-2">
-          <span className="badge bg-success">Available</span>
-          <span className="badge bg-danger">Booked</span>
-          <span className="badge bg-dark">Blocked</span>
+        <h5
+          className="fw-bold m-0 text-truncate ms-2 me-2"
+          style={{ maxWidth: "200px" }}
+        >
+          {eventName}
+        </h5>
+        <div className="d-flex gap-1 small">
+          <span className="badge bg-success" style={{ fontSize: "0.7rem" }}>
+            Free
+          </span>
+          <span className="badge bg-danger" style={{ fontSize: "0.7rem" }}>
+            Booked
+          </span>
+          <span className="badge bg-dark" style={{ fontSize: "0.7rem" }}>
+            Blocked
+          </span>
         </div>
       </div>
 
       {/* STAGE */}
       <div
         className="bg-dark text-white text-center py-2 mb-4 rounded shadow mx-auto"
-        style={{ width: "600px" }}
+        style={{ width: "min(90%, 600px)" }}
       >
         STAGE
       </div>
 
-      {/* SEATING MAP */}
-      <div className="d-flex flex-column gap-1 mb-5">
-        {ROW_CONFIG.map((row) => {
-          const leftSeats = generateSeats(row.id, row.left, false);
-          const rightSeats = generateSeats(row.id, row.right, true);
+      {/* --- SCROLL WRAPPER (Fixes Left Cut-off) --- */}
+      <div
+        className="w-100"
+        style={{ overflowX: "auto", paddingBottom: "80px" }}
+      >
+        {/* INNER CONTAINER (Forces min-width) */}
+        <div
+          className="d-flex flex-column gap-1 mx-auto"
+          style={{
+            minWidth: "980px",
+            width: "fit-content",
+            paddingLeft: "10px",
+            paddingRight: "10px",
+          }}
+        >
+          {ROW_CONFIG.map((row) => {
+            const leftSeats = generateSeats(row.id, row.left, false);
+            const rightSeats = generateSeats(row.id, row.right, true);
 
-          return (
-            <React.Fragment key={row.id}>
-              <div className="d-flex justify-content-center align-items-center">
-                <div
-                  className="text-muted small me-2"
-                  style={{ width: "30px", textAlign: "right" }}
-                >
-                  R{row.id}
+            return (
+              <React.Fragment key={row.id}>
+                <div className="d-flex justify-content-center align-items-center">
+                  {/* Row Label */}
+                  <div
+                    className="text-muted small me-2"
+                    style={{ width: "30px", textAlign: "right" }}
+                  >
+                    R{row.id}
+                  </div>
+
+                  {/* LEFT WING */}
+                  <div
+                    className="d-flex gap-1 justify-content-end"
+                    style={{ width: "450px" }}
+                  >
+                    {leftSeats.map((seat) => (
+                      <SeatBox
+                        key={seat.uniqueId}
+                        seat={seat}
+                        isBooked={bookedSeats[seat.uniqueId]}
+                        onClick={() => handleSeatClick(seat)}
+                        setHover={setHoverInfo}
+                      />
+                    ))}
+                  </div>
+
+                  {/* AISLE */}
+                  <div style={{ width: "60px" }}></div>
+
+                  {/* RIGHT WING */}
+                  <div
+                    className="d-flex gap-1 justify-content-start"
+                    style={{ width: "450px" }}
+                  >
+                    {rightSeats.map((seat) => (
+                      <SeatBox
+                        key={seat.uniqueId}
+                        seat={seat}
+                        isBooked={bookedSeats[seat.uniqueId]}
+                        onClick={() => handleSeatClick(seat)}
+                        setHover={setHoverInfo}
+                      />
+                    ))}
+                  </div>
                 </div>
 
-                {/* LEFT WING */}
-                <div
-                  className="d-flex gap-1 justify-content-end"
-                  style={{ width: "450px" }}
-                >
-                  {leftSeats.map((seat) => (
-                    <SeatBox
-                      key={seat.uniqueId}
-                      seat={seat}
-                      isBooked={bookedSeats[seat.uniqueId]}
-                      onClick={() => handleSeatClick(seat)}
-                      setHover={setHoverInfo}
-                    />
-                  ))}
-                </div>
-
-                {/* AISLE */}
-                <div style={{ width: "60px" }}></div>
-
-                {/* RIGHT WING */}
-                <div
-                  className="d-flex gap-1 justify-content-start"
-                  style={{ width: "450px" }}
-                >
-                  {rightSeats.map((seat) => (
-                    <SeatBox
-                      key={seat.uniqueId}
-                      seat={seat}
-                      isBooked={bookedSeats[seat.uniqueId]}
-                      onClick={() => handleSeatClick(seat)}
-                      setHover={setHoverInfo}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* WALKWAY SEPARATOR */}
-              {row.id === 9 && (
-                <div
-                  className="w-100 text-center my-4 py-1 bg-secondary text-white small rounded"
-                  style={{ opacity: 0.8 }}
-                >
-                  WALKWAY
-                </div>
-              )}
-            </React.Fragment>
-          );
-        })}
+                {/* WALKWAY SEPARATOR */}
+                {row.id === 9 && (
+                  <div
+                    className="w-100 text-center my-4 py-1 bg-secondary text-white small rounded"
+                    style={{ opacity: 0.8 }}
+                  >
+                    WALKWAY
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
       </div>
 
       {/* TOOLTIP */}
@@ -295,10 +334,10 @@ function SeatingPage() {
 }
 
 // ----------------------------------------------------------------
-// UPDATED SEAT BOX COMPONENT
+// SUB-COMPONENT: SEAT BOX
 // ----------------------------------------------------------------
 function SeatBox({ seat, isBooked, onClick, setHover }) {
-  // BLACKOUT LOGIC: 230 & 285
+  // BLACKOUT LOGIC: 230 & 285 (Black box, no click)
   const isBlackedOut = seat.num === 230 || seat.num === 285;
 
   if (isBlackedOut) {
@@ -308,13 +347,14 @@ function SeatBox({ seat, isBooked, onClick, setHover }) {
         style={{
           width: "30px",
           height: "30px",
-          backgroundColor: "#000", // PURE BLACK
+          backgroundColor: "#000", // Pure Black
           cursor: "not-allowed",
           fontSize: "10px",
           fontWeight: "bold",
           userSelect: "none",
+          boxShadow: "inset 0 0 5px rgba(255,255,255,0.2)",
         }}
-        title="Seat Blocked"
+        title="Blocked"
       >
         {seat.label}
       </div>

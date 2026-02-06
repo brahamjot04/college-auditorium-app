@@ -4,6 +4,7 @@ import {
   collection,
   addDoc,
   updateDoc,
+  deleteDoc,
   doc,
   query,
   orderBy,
@@ -17,17 +18,20 @@ function Home() {
   const [events, setEvents] = useState([]);
   const [pendingUsers, setPendingUsers] = useState([]);
 
-  // Form State
+  // Create Form State
   const [newEventName, setNewEventName] = useState("");
   const [eventDate, setEventDate] = useState("");
+
+  // Edit Form State
+  const [editingEvent, setEditingEvent] = useState(null); // The event currently being edited
+  const [editName, setEditName] = useState("");
+  const [editDate, setEditDate] = useState("");
 
   const navigate = useNavigate();
 
   // ---------------------------------------------------------
-  // 1. DATA FETCHING (Real-time)
+  // 1. DATA FETCHING
   // ---------------------------------------------------------
-
-  // Fetch Events
   useEffect(() => {
     const q = query(collection(db, "events"), orderBy("date", "desc"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -36,7 +40,6 @@ function Home() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch Pending Users
   useEffect(() => {
     const q = query(collection(db, "users"), where("role", "==", "pending"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -51,7 +54,7 @@ function Home() {
   // 2. ACTIONS
   // ---------------------------------------------------------
 
-  // Create a new event
+  // CREATE
   const createEvent = async (e) => {
     e.preventDefault();
     if (!newEventName || !eventDate) return;
@@ -62,36 +65,68 @@ function Home() {
         date: eventDate,
         createdAt: new Date(),
       });
-      // Reset form
       setNewEventName("");
       setEventDate("");
     } catch (err) {
-      console.error("Error creating event:", err);
-      alert("Failed to create event");
+      alert("Error creating event: " + err.message);
     }
   };
 
-  // Approve a pending user
-  const approveUser = async (userId, userEmail) => {
-    if (!window.confirm(`Approve admin access for ${userEmail}?`)) return;
+  // DELETE
+  const handleDeleteEvent = async (eventId, eventName) => {
+    if (
+      !window.confirm(
+        `Are you sure you want to delete "${eventName}"?\n\nThis will remove the event from the list. (Note: Student bookings in the database might need manual cleanup if you re-create it).`,
+      )
+    ) {
+      return;
+    }
 
     try {
-      await updateDoc(doc(db, "users", userId), {
-        role: "admin",
-      });
+      await deleteDoc(doc(db, "events", eventId));
     } catch (err) {
-      console.error("Error approving user:", err);
+      alert("Error deleting event: " + err.message);
+    }
+  };
+
+  // PREPARE EDIT
+  const openEditModal = (event) => {
+    setEditingEvent(event);
+    setEditName(event.name);
+    setEditDate(event.date);
+  };
+
+  // SAVE EDIT
+  const handleUpdateEvent = async (e) => {
+    e.preventDefault();
+    if (!editingEvent || !editName || !editDate) return;
+
+    try {
+      await updateDoc(doc(db, "events", editingEvent.id), {
+        name: editName,
+        date: editDate,
+      });
+      setEditingEvent(null); // Close Modal
+    } catch (err) {
+      alert("Error updating event: " + err.message);
+    }
+  };
+
+  // APPROVE USER
+  const approveUser = async (userId, userEmail) => {
+    if (!window.confirm(`Approve admin access for ${userEmail}?`)) return;
+    try {
+      await updateDoc(doc(db, "users", userId), { role: "admin" });
+    } catch (err) {
       alert("Failed to approve user");
     }
   };
 
-  // Logout
   const handleLogout = async () => {
     await signOut(auth);
     navigate("/");
   };
 
-  // Navigate to Seating Plan (We will build this page next)
   const openSeatingPlan = (eventId) => {
     navigate(`/seats/${eventId}`);
   };
@@ -108,7 +143,6 @@ function Home() {
           <small className="text-muted">College Auditorium Admin Panel</small>
         </div>
         <div className="d-flex gap-2">
-          {/* Optional: Add Admin Button if you want it here */}
           <button
             onClick={() => navigate("/register")}
             className="btn btn-outline-primary"
@@ -121,7 +155,7 @@ function Home() {
         </div>
       </div>
 
-      {/* PENDING APPROVALS (Conditional) */}
+      {/* PENDING APPROVALS */}
       {pendingUsers.length > 0 && (
         <div className="card mb-5 border-warning shadow-sm">
           <div className="card-header bg-warning text-dark fw-bold d-flex justify-content-between align-items-center">
@@ -136,15 +170,12 @@ function Home() {
                 key={user.id}
                 className="list-group-item d-flex justify-content-between align-items-center"
               >
-                <div>
-                  <span className="fw-semibold">{user.email}</span>
-                  <span className="text-muted small ms-2">({user.role})</span>
-                </div>
+                <span>{user.email}</span>
                 <button
                   className="btn btn-sm btn-success"
                   onClick={() => approveUser(user.id, user.email)}
                 >
-                  Approve Access
+                  Approve
                 </button>
               </li>
             ))}
@@ -185,7 +216,7 @@ function Home() {
         </div>
       </div>
 
-      {/* UPCOMING EVENTS GRID */}
+      {/* UPCOMING EVENTS LIST */}
       <h3 className="mb-4 fw-bold text-secondary">Your Events</h3>
 
       {events.length === 0 ? (
@@ -198,18 +229,41 @@ function Home() {
           {events.map((event) => (
             <div key={event.id} className="col-md-6 col-lg-4">
               <div className="card h-100 border-0 shadow-sm hover-shadow transition-all">
-                <div className="card-body d-flex flex-col justify-content-between">
-                  <div>
-                    <h5 className="card-title fw-bold text-primary">
+                <div className="card-body d-flex flex-column">
+                  <div className="d-flex justify-content-between align-items-start mb-3">
+                    <h5 className="card-title fw-bold text-primary mb-0">
                       {event.name}
                     </h5>
-                    <p className="card-text text-muted mb-4">
-                      📅 {new Date(event.date).toLocaleDateString()}
-                    </p>
+                    <div className="dropdown">
+                      {/* Edit/Delete Actions */}
+                      <div className="btn-group">
+                        <button
+                          onClick={() => openEditModal(event)}
+                          className="btn btn-sm btn-outline-secondary"
+                          title="Edit Event"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() =>
+                            handleDeleteEvent(event.id, event.name)
+                          }
+                          className="btn btn-sm btn-outline-danger"
+                          title="Delete Event"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
                   </div>
+
+                  <p className="card-text text-muted mb-4 flex-grow-1">
+                    📅 {new Date(event.date).toLocaleDateString()}
+                  </p>
+
                   <div className="d-grid">
                     <button
-                      className="btn btn-outline-primary"
+                      className="btn btn-primary"
                       onClick={() => openSeatingPlan(event.id)}
                     >
                       Manage Seats
@@ -220,6 +274,63 @@ function Home() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* EDIT MODAL */}
+      {editingEvent && (
+        <>
+          <div className="modal-backdrop fade show"></div>
+          <div className="modal fade show d-block" tabIndex="-1">
+            <div className="modal-dialog modal-dialog-centered">
+              <div className="modal-content">
+                <div className="modal-header bg-secondary text-white">
+                  <h5 className="modal-title">Edit Event</h5>
+                  <button
+                    type="button"
+                    className="btn-close btn-close-white"
+                    onClick={() => setEditingEvent(null)}
+                  ></button>
+                </div>
+                <div className="modal-body">
+                  <form onSubmit={handleUpdateEvent}>
+                    <div className="mb-3">
+                      <label className="form-label">Event Name</label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Event Date</label>
+                      <input
+                        type="date"
+                        className="form-control"
+                        value={editDate}
+                        onChange={(e) => setEditDate(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="d-flex justify-content-end gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-light"
+                        onClick={() => setEditingEvent(null)}
+                      >
+                        Cancel
+                      </button>
+                      <button type="submit" className="btn btn-success">
+                        Save Changes
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

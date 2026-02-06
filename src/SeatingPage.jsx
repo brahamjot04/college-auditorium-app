@@ -24,11 +24,18 @@ function SeatingPage() {
   // Modal Inputs (Booking)
   const [studentName, setStudentName] = useState("");
   const [studentContact, setStudentContact] = useState("");
+  const [bookingStartSeat, setBookingStartSeat] = useState(""); // NEW
+  const [bookingEndSeat, setBookingEndSeat] = useState(""); // NEW
 
   // Modal Inputs (Blocking)
   const [showBlockModal, setShowBlockModal] = useState(false);
   const [blockStart, setBlockStart] = useState("");
   const [blockEnd, setBlockEnd] = useState("");
+
+  // Modal Inputs (Unblocking)
+  const [showUnblockModal, setShowUnblockModal] = useState(false); // NEW
+  const [unblockStart, setUnblockStart] = useState(""); // NEW
+  const [unblockEnd, setUnblockEnd] = useState(""); // NEW
 
   // ----------------------------------------------------------------
   // 1. CONFIGURATION
@@ -92,7 +99,7 @@ function SeatingPage() {
   };
 
   // ----------------------------------------------------------------
-  // 2. DATA
+  // 2. DATA FETCHING
   // ----------------------------------------------------------------
   useEffect(() => {
     getDoc(doc(db, "events", eventId)).then((docSnap) => {
@@ -116,7 +123,7 @@ function SeatingPage() {
   // 3. HANDLERS
   // ----------------------------------------------------------------
 
-  // -- BLOCKING LOGIC --
+  // -- BLOCK RANGE --
   const handleBlockSubmit = async (e) => {
     e.preventDefault();
     const start = parseInt(blockStart);
@@ -127,7 +134,7 @@ function SeatingPage() {
       return;
     }
 
-    const batch = writeBatch(db); // Use batch for better performance
+    const batch = writeBatch(db);
     let count = 0;
 
     for (let i = start; i <= end; i++) {
@@ -136,7 +143,6 @@ function SeatingPage() {
         const uniqueId = `seat_${i}_${rowId}`;
         const seatRef = doc(db, "events", eventId, "seats", uniqueId);
 
-        // We use a special status 'blocked'
         batch.set(seatRef, {
           label: getSeatLabel(rowId, i),
           status: "blocked",
@@ -156,48 +162,105 @@ function SeatingPage() {
     }
   };
 
-  // -- BOOKING LOGIC --
-  const handleSeatClick = (seat) => {
-    // if (seat.num === 230 || seat.num === 285) return;
+  // -- UNBLOCK RANGE (NEW) --
+  const handleUnblockSubmit = async (e) => {
+    e.preventDefault();
+    const start = parseInt(unblockStart);
+    const end = parseInt(unblockEnd);
 
+    if (isNaN(start) || isNaN(end) || start > end) {
+      alert("Invalid Range");
+      return;
+    }
+
+    const batch = writeBatch(db);
+    let count = 0;
+
+    for (let i = start; i <= end; i++) {
+      const rowId = findRowForSeat(i);
+      if (rowId) {
+        const uniqueId = `seat_${i}_${rowId}`;
+        const seatRef = doc(db, "events", eventId, "seats", uniqueId);
+        // We DELETE the document to unblock it
+        batch.delete(seatRef);
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      await batch.commit();
+      alert(`Successfully unblocked range ${start}-${end}`);
+      setShowUnblockModal(false);
+      setUnblockStart("");
+      setUnblockEnd("");
+    } else {
+      alert("No seats found in range.");
+    }
+  };
+
+  // -- SEAT CLICK --
+  const handleSeatClick = (seat) => {
     const existing = bookedSeats[seat.uniqueId];
 
     if (existing) {
-      // If it's a BLOCKED seat, allow admin to unblock
-      if (existing.status === "blocked") {
-        if (window.confirm(`Unblock Seat ${seat.label}?`)) {
-          deleteDoc(doc(db, "events", eventId, "seats", seat.uniqueId));
-        }
-      }
-      // If it's a STUDENT booking
-      else {
-        if (
-          window.confirm(
-            `Release seat ${seat.label} booked by ${existing.name}?`,
-          )
-        ) {
-          deleteDoc(doc(db, "events", eventId, "seats", seat.uniqueId));
-        }
+      // Unbooking/Unblocking Logic
+      const action = existing.status === "blocked" ? "Unblock" : "Release";
+      const name = existing.name ? `booked by ${existing.name}` : "";
+
+      if (window.confirm(`${action} seat ${seat.label} ${name}?`)) {
+        deleteDoc(doc(db, "events", eventId, "seats", seat.uniqueId));
       }
     } else {
+      // Open Booking Modal
       setSelectedSeat(seat);
+      setBookingStartSeat(seat.num); // Auto-fill start
+      setBookingEndSeat(""); // Reset end
       setStudentName("");
       setStudentContact("");
     }
   };
 
+  // -- BOOKING SUBMIT (Updated for Ranges) --
   const submitBooking = async (e) => {
     e.preventDefault();
-    if (!studentName || !studentContact) return;
+    if (!studentName || !studentContact || !bookingStartSeat) return;
+
+    const start = parseInt(bookingStartSeat);
+    // If end seat is empty, treat it as single seat booking (start to start)
+    const end = bookingEndSeat ? parseInt(bookingEndSeat) : start;
+
+    if (start > end) {
+      alert("Start seat must be smaller than end seat.");
+      return;
+    }
+
     try {
-      await setDoc(doc(db, "events", eventId, "seats", selectedSeat.uniqueId), {
-        label: selectedSeat.label,
-        name: studentName,
-        contact: studentContact,
-        status: "booked", // Standard booking
-        bookedAt: new Date(),
-      });
-      setSelectedSeat(null);
+      const batch = writeBatch(db);
+      let count = 0;
+
+      for (let i = start; i <= end; i++) {
+        const rowId = findRowForSeat(i);
+        if (rowId) {
+          const uniqueId = `seat_${i}_${rowId}`;
+          const seatRef = doc(db, "events", eventId, "seats", uniqueId);
+
+          batch.set(seatRef, {
+            label: getSeatLabel(rowId, i),
+            name: studentName,
+            contact: studentContact,
+            status: "booked",
+            bookedAt: new Date(),
+          });
+          count++;
+        }
+      }
+
+      if (count > 0) {
+        await batch.commit();
+        setSelectedSeat(null); // Close modal
+      } else {
+        alert("Invalid seat range.");
+      }
     } catch (err) {
       alert(err.message);
     }
@@ -229,7 +292,14 @@ function SeatingPage() {
         </div>
 
         <div className="d-flex align-items-center gap-2">
-          {/* NEW BLOCK BUTTON */}
+          {/* Unblock Button */}
+          <button
+            onClick={() => setShowUnblockModal(true)}
+            className="btn btn-outline-danger btn-sm px-2"
+          >
+            Unblock Range
+          </button>
+          {/* Block Button */}
           <button
             onClick={() => setShowBlockModal(true)}
             className="btn btn-dark btn-sm px-3"
@@ -237,7 +307,6 @@ function SeatingPage() {
             Block Range
           </button>
 
-          {/* Legend */}
           <div className="d-none d-md-flex gap-1 small ms-2">
             <span className="badge bg-success">Free</span>
             <span className="badge bg-danger">Booked</span>
@@ -254,7 +323,7 @@ function SeatingPage() {
         STAGE
       </div>
 
-      {/* SCROLL WRAPPER */}
+      {/* SEATING MAP */}
       <div
         className="w-100"
         style={{ overflowX: "auto", paddingBottom: "80px" }}
@@ -290,7 +359,7 @@ function SeatingPage() {
                       <SeatBox
                         key={seat.uniqueId}
                         seat={seat}
-                        data={bookedSeats[seat.uniqueId]} // Pass full data object
+                        data={bookedSeats[seat.uniqueId]}
                         onClick={() => handleSeatClick(seat)}
                         setHover={setHoverInfo}
                       />
@@ -345,9 +414,6 @@ function SeatingPage() {
                   ></button>
                 </div>
                 <div className="modal-body">
-                  <p className="small text-muted">
-                    This will make the selected seats unavailable.
-                  </p>
                   <form onSubmit={handleBlockSubmit}>
                     <div className="row">
                       <div className="col-6 mb-3">
@@ -382,7 +448,61 @@ function SeatingPage() {
         </>
       )}
 
-      {/* BOOKING MODAL */}
+      {/* NEW: UNBLOCK RANGE MODAL */}
+      {showUnblockModal && (
+        <>
+          <div className="modal-backdrop fade show"></div>
+          <div className="modal fade show d-block" tabIndex="-1">
+            <div className="modal-dialog modal-dialog-centered">
+              <div className="modal-content">
+                <div className="modal-header bg-danger text-white">
+                  <h5 className="modal-title">Unblock / Release Range</h5>
+                  <button
+                    type="button"
+                    className="btn-close btn-close-white"
+                    onClick={() => setShowUnblockModal(false)}
+                  ></button>
+                </div>
+                <div className="modal-body">
+                  <p className="small text-danger">
+                    Warning: This will clear all bookings and blocks in this
+                    range.
+                  </p>
+                  <form onSubmit={handleUnblockSubmit}>
+                    <div className="row">
+                      <div className="col-6 mb-3">
+                        <label className="form-label">Start Number</label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          required
+                          value={unblockStart}
+                          onChange={(e) => setUnblockStart(e.target.value)}
+                        />
+                      </div>
+                      <div className="col-6 mb-3">
+                        <label className="form-label">End Number</label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          required
+                          value={unblockEnd}
+                          onChange={(e) => setUnblockEnd(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <button type="submit" className="btn btn-danger w-100">
+                      Unblock Seats
+                    </button>
+                  </form>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* BOOKING MODAL (Updated) */}
       {selectedSeat && (
         <>
           <div className="modal-backdrop fade show"></div>
@@ -390,9 +510,7 @@ function SeatingPage() {
             <div className="modal-dialog modal-dialog-centered">
               <div className="modal-content">
                 <div className="modal-header bg-primary text-white">
-                  <h5 className="modal-title">
-                    Book Seat {selectedSeat.label}
-                  </h5>
+                  <h5 className="modal-title">Book Seat(s)</h5>
                   <button
                     type="button"
                     className="btn-close btn-close-white"
@@ -401,6 +519,32 @@ function SeatingPage() {
                 </div>
                 <div className="modal-body">
                   <form onSubmit={submitBooking}>
+                    {/* Range Inputs */}
+                    <div className="row">
+                      <div className="col-6 mb-2">
+                        <label className="form-label small">Start Seat</label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          value={bookingStartSeat}
+                          onChange={(e) => setBookingStartSeat(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="col-6 mb-2">
+                        <label className="form-label small">
+                          End Seat (Optional)
+                        </label>
+                        <input
+                          type="number"
+                          className="form-control"
+                          value={bookingEndSeat}
+                          onChange={(e) => setBookingEndSeat(e.target.value)}
+                          placeholder="Single seat"
+                        />
+                      </div>
+                    </div>
+                    <hr className="my-2" />
                     <div className="mb-3">
                       <label className="form-label">Student Name</label>
                       <input
@@ -423,7 +567,9 @@ function SeatingPage() {
                       />
                     </div>
                     <button type="submit" className="btn btn-primary w-100">
-                      Confirm Booking
+                      {bookingEndSeat
+                        ? "Confirm Multi-Booking"
+                        : "Confirm Booking"}
                     </button>
                   </form>
                 </div>
@@ -461,40 +607,23 @@ function SeatingPage() {
 // SUB-COMPONENT: SEAT BOX
 // ----------------------------------------------------------------
 function SeatBox({ seat, data, onClick, setHover }) {
-  // const isBlackedOut = seat.num === 230 || seat.num === 285;
   const isBlocked = data && data.status === "blocked";
   const isBooked = data && !isBlocked;
 
-  // 1. Permanent Blackout (Structure)
-  // if (isBlackedOut) {
-  //   return (
-  //     <div
-  //       className="seat-base"
-  //       style={{
-  //         backgroundColor: "#000",
-  //         cursor: "not-allowed",
-  //         boxShadow: "inset 0 0 5px rgba(255,255,255,0.2)",
-  //       }}
-  //     >
-  //       {seat.label}
-  //     </div>
-  //   );
-  // }
-
-  // 2. Admin Blocked (Manual Range)
+  // 2. Admin Blocked
   if (isBlocked) {
     return (
       <div
         onClick={onClick}
         className="seat-base"
-        style={{ backgroundColor: "#6c757d", cursor: "pointer" }} // Gray
+        style={{ backgroundColor: "#6c757d", cursor: "pointer" }}
       >
         {seat.label}
       </div>
     );
   }
 
-  // 3. Standard Booked / Available
+  // 3. Booked / Available
   return (
     <div
       onClick={onClick}
@@ -511,7 +640,7 @@ function SeatBox({ seat, data, onClick, setHover }) {
       onMouseLeave={() => setHover(null)}
       className="seat-base"
       style={{
-        backgroundColor: isBooked ? "#dc3545" : "#198754", // Red or Green
+        backgroundColor: isBooked ? "#dc3545" : "#198754",
         cursor: "pointer",
         boxShadow: isBooked ? "inset 0 0 5px rgba(0,0,0,0.5)" : "none",
       }}
@@ -521,7 +650,7 @@ function SeatBox({ seat, data, onClick, setHover }) {
   );
 }
 
-// Simple CSS helper for seats (can be in index.css, but inline for safety here)
+// Simple CSS helper
 const seatStyles = `
   .seat-base {
     width: 30px; 
@@ -541,7 +670,6 @@ const seatStyles = `
   }
 `;
 
-// Inject styles dynamically (one-time hack for single file)
 if (!document.getElementById("seat-styles")) {
   const style = document.createElement("style");
   style.id = "seat-styles";

@@ -158,7 +158,7 @@ function SeatingPage() {
 
   // -- BOOKING LOGIC --
   const handleSeatClick = (seat) => {
-    if (seat.num === 230 || seat.num === 285) return;
+    // if (seat.num === 230 || seat.num === 285) return;
 
     const existing = bookedSeats[seat.uniqueId];
 
@@ -461,25 +461,25 @@ function SeatingPage() {
 // SUB-COMPONENT: SEAT BOX
 // ----------------------------------------------------------------
 function SeatBox({ seat, data, onClick, setHover }) {
-  const isBlackedOut = seat.num === 230 || seat.num === 285;
+  // const isBlackedOut = seat.num === 230 || seat.num === 285;
   const isBlocked = data && data.status === "blocked";
   const isBooked = data && !isBlocked;
 
   // 1. Permanent Blackout (Structure)
-  if (isBlackedOut) {
-    return (
-      <div
-        className="seat-base"
-        style={{
-          backgroundColor: "#000",
-          cursor: "not-allowed",
-          boxShadow: "inset 0 0 5px rgba(255,255,255,0.2)",
-        }}
-      >
-        {seat.label}
-      </div>
-    );
-  }
+  // if (isBlackedOut) {
+  //   return (
+  //     <div
+  //       className="seat-base"
+  //       style={{
+  //         backgroundColor: "#000",
+  //         cursor: "not-allowed",
+  //         boxShadow: "inset 0 0 5px rgba(255,255,255,0.2)",
+  //       }}
+  //     >
+  //       {seat.label}
+  //     </div>
+  //   );
+  // }
 
   // 2. Admin Blocked (Manual Range)
   if (isBlocked) {

@@ -79,15 +79,8 @@ function App() {
           }
         />
 
-        {/* Protected Route: Register Admin */}
-        <Route
-          path="/register"
-          element={
-            <ProtectedRoute>
-              <Register />
-            </ProtectedRoute>
-          }
-        />
+        {/* Public Route: Register Admin */}
+        <Route path="/register" element={<Register />} />
       </Routes>
     </Router>
   );

@@ -13,6 +13,7 @@ import Login from "./Login";
 import Home from "./Home";
 import Register from "./Register";
 import SeatingPage from "./SeatingPage";
+import CheckInPage from "./CheckInPage";
 
 // 🔒 1. Create the Security Guard Component
 function ProtectedRoute({ children }) {
@@ -65,6 +66,15 @@ function App() {
           element={
             <ProtectedRoute>
               <SeatingPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/checkin/:eventId"
+          element={
+            <ProtectedRoute>
+              <CheckInPage />
             </ProtectedRoute>
           }
         />

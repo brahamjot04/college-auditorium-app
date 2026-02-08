@@ -23,7 +23,7 @@ function Home() {
   const [eventDate, setEventDate] = useState("");
 
   // Edit Form State
-  const [editingEvent, setEditingEvent] = useState(null); // The event currently being edited
+  const [editingEvent, setEditingEvent] = useState(null);
   const [editName, setEditName] = useState("");
   const [editDate, setEditDate] = useState("");
 
@@ -106,7 +106,7 @@ function Home() {
         name: editName,
         date: editDate,
       });
-      setEditingEvent(null); // Close Modal
+      setEditingEvent(null);
     } catch (err) {
       alert("Error updating event: " + err.message);
     }
@@ -125,10 +125,6 @@ function Home() {
   const handleLogout = async () => {
     await signOut(auth);
     navigate("/");
-  };
-
-  const openSeatingPlan = (eventId) => {
-    navigate(`/seats/${eventId}`);
   };
 
   // ---------------------------------------------------------
@@ -234,26 +230,21 @@ function Home() {
                     <h5 className="card-title fw-bold text-primary mb-0">
                       {event.name}
                     </h5>
-                    <div className="dropdown">
-                      {/* Edit/Delete Actions */}
-                      <div className="btn-group">
-                        <button
-                          onClick={() => openEditModal(event)}
-                          className="btn btn-sm btn-outline-secondary"
-                          title="Edit Event"
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          onClick={() =>
-                            handleDeleteEvent(event.id, event.name)
-                          }
-                          className="btn btn-sm btn-outline-danger"
-                          title="Delete Event"
-                        >
-                          🗑️
-                        </button>
-                      </div>
+                    <div className="btn-group">
+                      <button
+                        onClick={() => openEditModal(event)}
+                        className="btn btn-sm btn-outline-secondary"
+                        title="Edit Event"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        onClick={() => handleDeleteEvent(event.id, event.name)}
+                        className="btn btn-sm btn-outline-danger"
+                        title="Delete Event"
+                      >
+                        🗑️
+                      </button>
                     </div>
                   </div>
 
@@ -261,12 +252,19 @@ function Home() {
                     📅 {new Date(event.date).toLocaleDateString()}
                   </p>
 
-                  <div className="d-grid">
+                  {/* BUTTONS: MANAGE SEATS & CHECK-IN */}
+                  <div className="d-grid gap-2">
                     <button
                       className="btn btn-primary"
-                      onClick={() => openSeatingPlan(event.id)}
+                      onClick={() => navigate(`/seats/${event.id}`)}
                     >
                       Manage Seats
+                    </button>
+                    <button
+                      className="btn btn-outline-dark"
+                      onClick={() => navigate(`/checkin/${event.id}`)}
+                    >
+                      📋 Gate Check-In
                     </button>
                   </div>
                 </div>

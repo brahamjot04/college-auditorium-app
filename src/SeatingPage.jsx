@@ -37,6 +37,10 @@ function SeatingPage() {
   const [unblockStart, setUnblockStart] = useState(""); // NEW
   const [unblockEnd, setUnblockEnd] = useState(""); // NEW
 
+  const handlePrintExport = () => {
+    window.print();
+  };
+
   // ----------------------------------------------------------------
   // 1. CONFIGURATION
   // ----------------------------------------------------------------
@@ -273,7 +277,7 @@ function SeatingPage() {
     <div className="container-fluid py-4 bg-light min-vh-100 d-flex flex-column align-items-center">
       {/* HEADER */}
       <div
-        className="w-100 d-flex justify-content-between align-items-center mb-4 px-3 sticky-top bg-light py-2 shadow-sm"
+        className="w-100 d-flex justify-content-between align-items-center mb-4 px-3 sticky-top bg-light py-2 shadow-sm d-print-none"
         style={{ zIndex: 10 }}
       >
         <div className="d-flex align-items-center">
@@ -290,6 +294,13 @@ function SeatingPage() {
             {eventName}
           </h5>
         </div>
+
+        <button
+          onClick={handlePrintExport}
+          className="btn btn-success btn-sm px-2"
+        >
+          📸 Export Map
+        </button>
 
         <div className="d-flex align-items-center gap-2">
           {/* Unblock Button */}
@@ -313,6 +324,11 @@ function SeatingPage() {
             <span className="badge bg-secondary">Blocked</span>
           </div>
         </div>
+      </div>
+
+      {/* PRINT TITLE (Only shows on export) */}
+      <div className="d-none d-print-block text-center mb-3">
+        <h2>{eventName} - Seating Plan</h2>
       </div>
 
       {/* STAGE */}
@@ -667,6 +683,22 @@ const seatStyles = `
   }
   .seat-base:active {
     transform: scale(0.95);
+  }
+
+  /* PRINT / EXPORT STYLES */
+  @media print {
+    .d-print-none { display: none !important; }
+    .d-print-block { display: block !important; }
+    
+    /* Forces background colors (Green/Red) to show */
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    
+    /* Set Landscape and remove margins */
+    @page { size: landscape; margin: 5mm; }
+    body, .bg-light { background-color: white !important; }
+    
+    /* Ensure the map doesn't get cut off */
+    .w-100 { overflow: visible !important; }
   }
 `;
 

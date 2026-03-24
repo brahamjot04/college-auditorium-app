@@ -17,6 +17,7 @@ import { useNavigate } from "react-router-dom";
 function Home() {
   const [events, setEvents] = useState([]);
   const [pendingUsers, setPendingUsers] = useState([]);
+  const [eventsError, setEventsError] = useState("");
 
   // Create Form State
   const [newEventName, setNewEventName] = useState("");
@@ -34,19 +35,58 @@ function Home() {
   // ---------------------------------------------------------
   useEffect(() => {
     const q = query(collection(db, "events"), orderBy("date", "desc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+
+    const handleSnapshot = (snapshot) => {
+      setEventsError("");
       setEvents(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+    };
+
+    const handleEventsError = (err) => {
+      console.error("Failed to fetch ordered events:", err);
+
+      // Fallback: still fetch events without ordering if ordered query fails.
+      const fallbackUnsubscribe = onSnapshot(
+        collection(db, "events"),
+        (snapshot) => {
+          setEventsError("");
+          setEvents(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
+        },
+        (fallbackErr) => {
+          console.error("Failed to fetch events:", fallbackErr);
+          setEvents([]);
+          setEventsError(fallbackErr.message || "Unable to fetch events.");
+        },
+      );
+
+      return fallbackUnsubscribe;
+    };
+
+    let fallbackCleanup = null;
+    const unsubscribe = onSnapshot(q, handleSnapshot, (err) => {
+      fallbackCleanup = handleEventsError(err);
     });
-    return () => unsubscribe();
+
+    return () => {
+      unsubscribe();
+      if (fallbackCleanup) fallbackCleanup();
+    };
   }, []);
 
   useEffect(() => {
     const q = query(collection(db, "users"), where("role", "==", "pending"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPendingUsers(
-        snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
-      );
-    });
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setPendingUsers(
+          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })),
+        );
+      },
+      (err) => {
+        console.error("Failed to fetch pending users:", err);
+      },
+    );
+
     return () => unsubscribe();
   }, []);
 
@@ -214,6 +254,12 @@ function Home() {
 
       {/* UPCOMING EVENTS LIST */}
       <h3 className="mb-4 fw-bold text-secondary">Your Events</h3>
+
+      {eventsError && (
+        <div className="alert alert-danger" role="alert">
+          Failed to load events: {eventsError}
+        </div>
+      )}
 
       {events.length === 0 ? (
         <div className="text-center py-5 text-muted bg-white rounded border border-dashed">

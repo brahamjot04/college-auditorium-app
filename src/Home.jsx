@@ -22,6 +22,7 @@ function Home() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [eventsError, setEventsError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [activeTab, setActiveTab] = useState("upcoming"); // "upcoming" | "past"
 
   // Create Form State
   const [newEventName, setNewEventName] = useState("");
@@ -122,6 +123,7 @@ function Home() {
       await addDoc(collection(db, "events"), {
         name: newEventName,
         date: eventDate,
+        status: "active",
         createdAt: new Date(),
       });
       setNewEventName("");
@@ -183,8 +185,83 @@ function Home() {
     }
   };
 
-  // Filter events based on search term
-  const filteredEvents = events.filter((event) => {
+  // Helper: Normalize date string to YYYY-MM-DD
+  const getNormalizedDate = (dateVal) => {
+    if (!dateVal) return "";
+    if (typeof dateVal === "string") return dateVal.trim().slice(0, 10);
+    return "";
+  };
+
+  // Helper: Today's date string in LOCAL user timezone (YYYY-MM-DD)
+  const getTodayStr = () => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayStr = getTodayStr();
+
+  // Helper: Check if event is past/archived
+  // Rule: An event stays in UPCOMING throughout the entire day of the event.
+  // It only moves to PAST EVENTS on the next day (when todayStr > eventDate).
+  const isEventPast = (event) => {
+    // 1. If admin explicitly archived / completed the event
+    if (event.status === "completed") return true;
+
+    // 2. If admin explicitly reopened an event whose date has already passed
+    if (event.status === "reopened") return false;
+
+    const eventDate = getNormalizedDate(event.date);
+    if (!eventDate) return false;
+
+    // 3. Strict Next-Day Check:
+    // If eventDate === todayStr -> FALSE (Happening today! Stays in Upcoming all day)
+    // If eventDate > todayStr   -> FALSE (Future event, stays in Upcoming)
+    // If eventDate < todayStr   -> TRUE  (Event date has passed; it is now the next day or later)
+    return eventDate < todayStr;
+  };
+
+  // TOGGLE EVENT STATUS (ARCHIVE / REOPEN)
+  const handleToggleEventStatus = async (eventId, eventName, currentIsPast) => {
+    let newStatus;
+    if (currentIsPast) {
+      // If event date has already passed, set "reopened" to keep it in Upcoming despite its date
+      const targetEvent = events.find((e) => e.id === eventId);
+      const evDate = getNormalizedDate(targetEvent?.date);
+      newStatus = evDate && evDate < todayStr ? "reopened" : "active";
+    } else {
+      newStatus = "completed";
+    }
+
+    const actionDesc = currentIsPast
+      ? `reopen "${eventName}" and move it to Upcoming Events?`
+      : `mark "${eventName}" as completed and move it to Past / Archived Events?`;
+
+    if (!window.confirm(`Are you sure you want to ${actionDesc}`)) {
+      return;
+    }
+
+    try {
+      await updateDoc(doc(db, "events", eventId), {
+        status: newStatus,
+      });
+    } catch (err) {
+      console.error("Failed to update event status:", err);
+      alert("Failed to update event status: " + err.message);
+    }
+  };
+
+  // Separate events into Upcoming and Past lists
+  const upcomingEvents = events.filter((e) => !isEventPast(e));
+  const pastEvents = events.filter((e) => isEventPast(e));
+
+  // Determine which list is active
+  const activeEventsList = activeTab === "upcoming" ? upcomingEvents : pastEvents;
+
+  // Filter active events based on search term
+  const filteredEvents = activeEventsList.filter((event) => {
     const term = searchTerm.toLowerCase().trim();
     if (!term) return true;
     const nameMatch = event.name?.toLowerCase().includes(term);
@@ -394,7 +471,7 @@ function Home() {
                     color: theme.textPrimary,
                   }}
                 >
-                  Upcoming Events
+                  {activeTab === "upcoming" ? "Upcoming Events" : "Past Events"}
                 </h3>
                 <span
                   style={{
@@ -417,7 +494,9 @@ function Home() {
                   color: theme.textSecondary,
                 }}
               >
-                Auditorium scheduled bookings & check-in gates
+                {activeTab === "upcoming"
+                  ? "Auditorium scheduled bookings & check-in gates"
+                  : "Completed events, seating plans & attendance records"}
               </p>
             </div>
 
@@ -538,6 +617,134 @@ function Home() {
           </div>
         </div>
 
+        {/* EVENT LIFECYCLE TABS: Upcoming Events vs Past Events */}
+        <div className="d-flex align-items-center flex-wrap gap-2 mb-4">
+          <button
+            type="button"
+            onClick={() => setActiveTab("upcoming")}
+            style={{
+              background:
+                activeTab === "upcoming"
+                  ? isDarkMode
+                    ? "rgba(37, 99, 235, 0.28)"
+                    : "rgba(219, 234, 254, 0.95)"
+                  : isDarkMode
+                    ? "rgba(255, 255, 255, 0.05)"
+                    : "rgba(255, 255, 255, 0.7)",
+              border:
+                activeTab === "upcoming"
+                  ? isDarkMode
+                    ? "1px solid rgba(59, 130, 246, 0.55)"
+                    : "1px solid rgba(147, 197, 253, 0.9)"
+                  : theme.inputBorder,
+              color:
+                activeTab === "upcoming"
+                  ? isDarkMode
+                    ? "#93c5fd"
+                    : "#1d4ed8"
+                  : theme.textSecondary,
+              borderRadius: "14px",
+              padding: "9px 18px",
+              fontSize: "0.88rem",
+              fontWeight: activeTab === "upcoming" ? 700 : 500,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              transition: "all 0.2s ease",
+              boxShadow:
+                activeTab === "upcoming"
+                  ? isDarkMode
+                    ? "0 4px 14px rgba(37, 99, 235, 0.25)"
+                    : "0 4px 12px rgba(37, 99, 235, 0.12)"
+                  : "none",
+            }}
+          >
+            <span>🟢 Upcoming Events</span>
+            <span
+              style={{
+                background:
+                  activeTab === "upcoming"
+                    ? "#2563eb"
+                    : isDarkMode
+                      ? "rgba(255, 255, 255, 0.1)"
+                      : "rgba(0, 0, 0, 0.08)",
+                color:
+                  activeTab === "upcoming" ? "#ffffff" : theme.textSecondary,
+                borderRadius: "20px",
+                padding: "2px 8px",
+                fontSize: "0.75rem",
+                fontWeight: 700,
+              }}
+            >
+              {upcomingEvents.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("past")}
+            style={{
+              background:
+                activeTab === "past"
+                  ? isDarkMode
+                    ? "rgba(100, 116, 139, 0.28)"
+                    : "rgba(241, 245, 249, 0.95)"
+                  : isDarkMode
+                    ? "rgba(255, 255, 255, 0.05)"
+                    : "rgba(255, 255, 255, 0.7)",
+              border:
+                activeTab === "past"
+                  ? isDarkMode
+                    ? "1px solid rgba(148, 163, 184, 0.45)"
+                    : "1px solid rgba(203, 213, 225, 0.9)"
+                  : theme.inputBorder,
+              color:
+                activeTab === "past"
+                  ? isDarkMode
+                    ? "#cbd5e1"
+                    : "#475569"
+                  : theme.textSecondary,
+              borderRadius: "14px",
+              padding: "9px 18px",
+              fontSize: "0.88rem",
+              fontWeight: activeTab === "past" ? 700 : 500,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              transition: "all 0.2s ease",
+              boxShadow:
+                activeTab === "past"
+                  ? isDarkMode
+                    ? "0 4px 14px rgba(0, 0, 0, 0.3)"
+                    : "0 4px 12px rgba(100, 116, 139, 0.1)"
+                  : "none",
+            }}
+          >
+            <span>📁 Past / Archived Events</span>
+            <span
+              style={{
+                background:
+                  activeTab === "past"
+                    ? isDarkMode
+                      ? "#475569"
+                      : "#64748b"
+                    : isDarkMode
+                      ? "rgba(255, 255, 255, 0.1)"
+                      : "rgba(0, 0, 0, 0.08)",
+                color: activeTab === "past" ? "#ffffff" : theme.textSecondary,
+                borderRadius: "20px",
+                padding: "2px 8px",
+                fontSize: "0.75rem",
+                fontWeight: 700,
+              }}
+            >
+              {pastEvents.length}
+            </span>
+          </button>
+        </div>
+
         {/* ERROR NOTICE */}
         {eventsError && (
           <div
@@ -576,7 +783,11 @@ function Home() {
                 marginBottom: "8px",
               }}
             >
-              {searchTerm ? "No matching events found" : "No events scheduled yet"}
+              {searchTerm
+                ? "No matching events found"
+                : activeTab === "upcoming"
+                  ? "No upcoming events scheduled"
+                  : "No past or archived events"}
             </h4>
             <p
               style={{
@@ -588,9 +799,11 @@ function Home() {
             >
               {searchTerm
                 ? `No events matched "${searchTerm}". Try searching for another keyword or date.`
-                : isAdmin
-                  ? "Get started by creating your first auditorium event using the button above."
-                  : "Check back later for newly scheduled college auditorium events."}
+                : activeTab === "upcoming"
+                  ? (isAdmin
+                      ? "Get started by creating your first auditorium event using the button above."
+                      : "Check back later for newly scheduled college auditorium events.")
+                  : "Completed or past auditorium events will appear here."}
             </p>
             {searchTerm && (
               <button
@@ -628,95 +841,201 @@ function Home() {
                     flexDirection: "column",
                   }}
                 >
-                  {/* Card Top: Date & Admin Controls */}
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <span
-                      style={{
-                        background: theme.tagBg,
-                        border: theme.tagBorder,
-                        color: theme.tagText,
-                        borderRadius: "20px",
-                        padding: "4px 12px",
-                        fontSize: "0.78rem",
-                        fontWeight: 600,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                      }}
-                    >
-                      <span>📅</span>
-                      <span>
-                        {event.date
-                          ? new Date(event.date).toLocaleDateString(undefined, {
-                              weekday: "short",
-                              year: "numeric",
-                              month: "short",
-                              day: "numeric",
-                            })
-                          : "Date Unset"}
-                      </span>
-                    </span>
+                  {/* Card Top: Date, Status Badge & Admin Controls */}
+                  {(() => {
+                    const isPast = isEventPast(event);
+                    const isToday = getNormalizedDate(event.date) === todayStr;
 
-                    {/* Admin Edit / Delete Actions */}
-                    {isAdmin && (
-                      <div className="d-flex align-items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(event)}
-                          title="Edit Event"
-                          style={{
-                            background: isDarkMode
-                              ? "rgba(255, 255, 255, 0.08)"
-                              : "rgba(255, 255, 255, 0.9)",
-                            border: theme.inputBorder,
-                            color: theme.textPrimary,
-                            borderRadius: "10px",
-                            padding: "4px 9px",
-                            fontSize: "0.82rem",
-                            cursor: "pointer",
-                            transition: "all 0.15s ease",
-                          }}
-                          onMouseEnter={(e) =>
-                            (e.currentTarget.style.borderColor = "#3b82f6")
-                          }
-                          onMouseLeave={(e) =>
-                            (e.currentTarget.style.borderColor = isDarkMode
-                              ? "rgba(255, 255, 255, 0.12)"
-                              : "rgba(203, 213, 225, 0.85)")
-                          }
-                        >
-                          ✏️
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleDeleteEvent(event.id, event.name)
-                          }
-                          title="Delete Event"
-                          style={{
-                            background: "rgba(239, 68, 68, 0.1)",
-                            border: "1px solid rgba(239, 68, 68, 0.25)",
-                            color: "#ef4444",
-                            borderRadius: "10px",
-                            padding: "4px 9px",
-                            fontSize: "0.82rem",
-                            cursor: "pointer",
-                            transition: "all 0.15s ease",
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background =
-                              "rgba(239, 68, 68, 0.2)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background =
-                              "rgba(239, 68, 68, 0.1)";
-                          }}
-                        >
-                          🗑️
-                        </button>
+                    return (
+                      <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                        <div className="d-flex align-items-center flex-wrap gap-2">
+                          <span
+                            style={{
+                              background: theme.tagBg,
+                              border: theme.tagBorder,
+                              color: theme.tagText,
+                              borderRadius: "20px",
+                              padding: "4px 12px",
+                              fontSize: "0.78rem",
+                              fontWeight: 600,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "6px",
+                            }}
+                          >
+                            <span>📅</span>
+                            <span>
+                              {event.date
+                                ? new Date(event.date + "T00:00:00").toLocaleDateString(undefined, {
+                                    weekday: "short",
+                                    year: "numeric",
+                                    month: "short",
+                                    day: "numeric",
+                                  })
+                                : "Date Unset"}
+                            </span>
+                          </span>
+
+                          {/* Lifecycle Status Pill */}
+                          <span
+                            style={{
+                              borderRadius: "20px",
+                              padding: "3px 9px",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              background: isPast
+                                ? isDarkMode
+                                  ? "rgba(148, 163, 184, 0.16)"
+                                  : "rgba(100, 116, 139, 0.12)"
+                                : isToday
+                                  ? isDarkMode
+                                    ? "rgba(245, 158, 11, 0.2)"
+                                    : "rgba(245, 158, 11, 0.15)"
+                                : isDarkMode
+                                  ? "rgba(16, 185, 129, 0.18)"
+                                  : "rgba(16, 185, 129, 0.15)",
+                              color: isPast
+                                ? isDarkMode
+                                  ? "#94a3b8"
+                                  : "#64748b"
+                                : isToday
+                                  ? isDarkMode
+                                    ? "#fbbf24"
+                                    : "#b45309"
+                                : isDarkMode
+                                  ? "#6ee7b7"
+                                  : "#047857",
+                              border: isPast
+                                ? isDarkMode
+                                  ? "1px solid rgba(148, 163, 184, 0.25)"
+                                  : "1px solid rgba(203, 213, 225, 0.8)"
+                                : isToday
+                                  ? isDarkMode
+                                    ? "1px solid rgba(245, 158, 11, 0.35)"
+                                    : "1px solid rgba(245, 158, 11, 0.4)"
+                                : isDarkMode
+                                  ? "1px solid rgba(16, 185, 129, 0.35)"
+                                  : "1px solid rgba(110, 231, 183, 0.8)",
+                            }}
+                          >
+                            {event.status === "completed"
+                              ? "🏁 Completed"
+                              : event.status === "reopened"
+                                ? "🔄 Reopened"
+                                : isToday
+                                  ? "🔥 Happening Today"
+                                  : isPast
+                                    ? "📁 Archived"
+                                    : "🟢 Active"}
+                          </span>
+                        </div>
+
+                        {/* Admin Edit / Archive / Delete Actions */}
+                        {isAdmin && (
+                          <div className="d-flex align-items-center gap-1">
+                            {/* Toggle Archive / Reopen Button */}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleToggleEventStatus(event.id, event.name, isPast)
+                              }
+                              title={
+                                isPast
+                                  ? "Reopen event as Active"
+                                  : "Mark event as Completed / Archive"
+                              }
+                              style={{
+                                background: isPast
+                                  ? isDarkMode
+                                    ? "rgba(59, 130, 246, 0.15)"
+                                    : "rgba(219, 234, 254, 0.8)"
+                                  : isDarkMode
+                                    ? "rgba(245, 158, 11, 0.15)"
+                                    : "rgba(254, 243, 199, 0.8)",
+                                border: isPast
+                                  ? isDarkMode
+                                    ? "1px solid rgba(59, 130, 246, 0.35)"
+                                    : "1px solid rgba(147, 197, 253, 0.8)"
+                                  : isDarkMode
+                                    ? "1px solid rgba(245, 158, 11, 0.35)"
+                                    : "1px solid rgba(252, 211, 77, 0.8)",
+                                color: isPast
+                                  ? isDarkMode
+                                    ? "#93c5fd"
+                                    : "#1d4ed8"
+                                  : isDarkMode
+                                    ? "#fbbf24"
+                                    : "#b45309",
+                                borderRadius: "10px",
+                                padding: "4px 8px",
+                                fontSize: "0.78rem",
+                                fontWeight: 600,
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                              }}
+                            >
+                              {isPast ? "🔄 Reopen" : "🏁 Archive"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(event)}
+                              title="Edit Event"
+                              style={{
+                                background: isDarkMode
+                                  ? "rgba(255, 255, 255, 0.08)"
+                                  : "rgba(255, 255, 255, 0.9)",
+                                border: theme.inputBorder,
+                                color: theme.textPrimary,
+                                borderRadius: "10px",
+                                padding: "4px 9px",
+                                fontSize: "0.82rem",
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                              }}
+                              onMouseEnter={(e) =>
+                                (e.currentTarget.style.borderColor = "#3b82f6")
+                              }
+                              onMouseLeave={(e) =>
+                                (e.currentTarget.style.borderColor = isDarkMode
+                                  ? "rgba(255, 255, 255, 0.12)"
+                                  : "rgba(203, 213, 225, 0.85)")
+                              }
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleDeleteEvent(event.id, event.name)
+                              }
+                              title="Delete Event"
+                              style={{
+                                background: "rgba(239, 68, 68, 0.1)",
+                                border: "1px solid rgba(239, 68, 68, 0.25)",
+                                color: "#ef4444",
+                                borderRadius: "10px",
+                                padding: "4px 9px",
+                                fontSize: "0.82rem",
+                                cursor: "pointer",
+                                transition: "all 0.15s ease",
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background =
+                                  "rgba(239, 68, 68, 0.2)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background =
+                                  "rgba(239, 68, 68, 0.1)";
+                              }}
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    );
+                  })()}
 
                   {/* Event Title */}
                   <h4

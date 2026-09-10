@@ -735,10 +735,146 @@ function SeatingPage() {
         </div>
       </div>
 
-      {/* PRINT-ONLY HEADER (Only shows on browser print / export) */}
-      <div className="d-none d-print-block text-center mb-3">
-        <h2>{eventName} - Auditorium Seating Plan</h2>
-        <p>GNDEC Cultural Committee • Printed Date: {new Date().toLocaleDateString()}</p>
+      {/* PRINT-SPECIFIC CSS RULES */}
+      <style>{`
+        @media print {
+          @page {
+            size: landscape;
+            margin: 8mm;
+          }
+          body {
+            background: #ffffff !important;
+            color: #0f172a !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          .d-print-none {
+            display: none !important;
+          }
+          .d-print-block {
+            display: block !important;
+          }
+        }
+      `}</style>
+
+      {/* OFFICIAL PRINT-ONLY HEADER (Rendered exclusively on paper / PDF export) */}
+      <div
+        className="d-none d-print-block w-100 mb-3 text-dark px-3"
+        style={{
+          fontFamily: "'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+          paddingBottom: "10px",
+          borderBottom: "2px solid #0f172a",
+        }}
+      >
+        {/* College & Committee Branding */}
+        <div className="text-center mb-2">
+          <h2
+            style={{
+              fontSize: "1.35rem",
+              fontWeight: 800,
+              letterSpacing: "-0.2px",
+              margin: 0,
+              textTransform: "uppercase",
+              color: "#0f172a",
+            }}
+          >
+            Guru Nanak Dev Engineering College, Ludhiana
+          </h2>
+          <h4
+            style={{
+              fontSize: "1.02rem",
+              fontWeight: 700,
+              margin: "3px 0 0 0",
+              color: "#1e3a8a",
+            }}
+          >
+            Cultural Committee GNDEC — College Auditorium Seating Plan
+          </h4>
+        </div>
+
+        {/* Event Metadata Row */}
+        <div
+          style={{
+            border: "1px solid #cbd5e1",
+            borderRadius: "8px",
+            padding: "8px 16px",
+            background: "#f8fafc",
+            margin: "8px 0",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "8px",
+            fontSize: "0.86rem",
+          }}
+        >
+          <div>
+            <strong>Event: </strong>
+            <span style={{ fontSize: "0.95rem", fontWeight: 700 }}>{eventName}</span>
+          </div>
+          <div>
+            <strong>Scheduled Date: </strong>
+            <span>
+              {eventData?.date
+                ? new Date(eventData.date + "T00:00:00").toLocaleDateString(undefined, {
+                    weekday: "short",
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  })
+                : "Date Unset"}
+            </span>
+          </div>
+          <div>
+            <strong>Printed Timestamp: </strong>
+            <span>
+              {new Date().toLocaleDateString(undefined, {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+          </div>
+        </div>
+
+        {/* Capacity Breakdown & Legend */}
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "12px",
+            fontSize: "0.82rem",
+            padding: "2px 0",
+          }}
+        >
+          {/* Capacity Breakdown Counts */}
+          <div style={{ display: "flex", gap: "16px", fontWeight: 600 }}>
+            <span>Capacity: <strong>447 Seats</strong></span>
+            <span>Booked: <strong style={{ color: "#b91c1c" }}>{bookedCount}</strong></span>
+            <span>Blocked / VIP: <strong style={{ color: "#b45309" }}>{blockedCount}</strong></span>
+            <span>Available: <strong style={{ color: "#15803d" }}>{availableCount}</strong></span>
+          </div>
+
+          {/* Seating Color Legend */}
+          <div style={{ display: "flex", gap: "14px", alignItems: "center" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <span style={{ width: "12px", height: "12px", border: "1px solid #15803d", background: "#dcfce7", display: "inline-block", borderRadius: "2px" }}></span>
+              <span>Available</span>
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <span style={{ width: "12px", height: "12px", border: "1px solid #b91c1c", background: "#fee2e2", display: "inline-block", borderRadius: "2px" }}></span>
+              <span>Booked</span>
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+              <span style={{ width: "12px", height: "12px", border: "1px solid #64748b", background: "#e2e8f0", display: "inline-block", borderRadius: "2px" }}></span>
+              <span>Blocked / VIP</span>
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* MAIN SEATING CANVAS WRAPPER */}

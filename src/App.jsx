@@ -1,12 +1,10 @@
-import { useEffect, useState } from "react";
 import {
   BrowserRouter as Router,
   Routes,
   Route,
   Navigate,
 } from "react-router-dom";
-import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "./firebase";
+import { AuthProvider, useAuth } from "./AuthContext";
 
 // Pages
 import Login from "./Login";
@@ -14,75 +12,87 @@ import Home from "./Home";
 import Register from "./Register";
 import SeatingPage from "./SeatingPage";
 import CheckInPage from "./CheckInPage";
+import AddUserPage from "./AddUserPage";
 
-// 🔒 1. Create the Security Guard Component
-function ProtectedRoute({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+// 🔒 Security Guard Component
+function ProtectedRoute({ children, requireAdmin = false }) {
+  const { user, isAdmin, isUser, loading } = useAuth();
 
-  useEffect(() => {
-    // This listener runs every time the app loads to check if you are logged in
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // While checking, show a simple loading text (or a spinner)
   if (loading) {
     return <div className="text-center mt-5 pt-5">Loading...</div>;
   }
 
-  // ⛔ If no user is found, Kick them back to Login
+  // If no user is logged in (e.g. clean logout or visiting /home while logged out)
   if (!user) {
-    return <Navigate to="/" />;
+    return <Navigate to="/" replace />;
   }
 
-  // ✅ If user is found, allow them to see the page
+  // If user is logged in, but account has no approved permissions (neither admin nor staff)
+  if (!isAdmin && !isUser) {
+    return <Navigate to="/?error=unauthorized" replace />;
+  }
+
+  // If admin permission is required but user is not admin
+  if (requireAdmin && !isAdmin) {
+    return <Navigate to="/home" replace />;
+  }
+
   return children;
 }
 
 function App() {
   return (
-    <Router>
-      <Routes>
-        {/* Public Route: Login */}
-        <Route path="/" element={<Login />} />
+    <AuthProvider>
+      <Router>
+        <Routes>
+          {/* Public Route: Login */}
+          <Route path="/" element={<Login />} />
 
-        {/* Protected Route: Home */}
-        <Route
-          path="/home"
-          element={
-            <ProtectedRoute>
-              <Home />
-            </ProtectedRoute>
-          }
-        />
+          {/* Protected Route: Home */}
+          <Route
+            path="/home"
+            element={
+              <ProtectedRoute>
+                <Home />
+              </ProtectedRoute>
+            }
+          />
 
-        {/* Protected Route: Seating Page */}
-        <Route
-          path="/seats/:eventId"
-          element={
-            <ProtectedRoute>
-              <SeatingPage />
-            </ProtectedRoute>
-          }
-        />
+          {/* Protected Route: Seating Page */}
+          <Route
+            path="/seats/:eventId"
+            element={
+              <ProtectedRoute>
+                <SeatingPage />
+              </ProtectedRoute>
+            }
+          />
 
-        <Route
-          path="/checkin/:eventId"
-          element={
-            <ProtectedRoute>
-              <CheckInPage />
-            </ProtectedRoute>
-          }
-        />
+          {/* Protected Route: Check In Page */}
+          <Route
+            path="/checkin/:eventId"
+            element={
+              <ProtectedRoute>
+                <CheckInPage />
+              </ProtectedRoute>
+            }
+          />
 
-        {/* Public Route: Register Admin */}
-        <Route path="/register" element={<Register />} />
-      </Routes>
-    </Router>
+          {/* Protected Route: Add Admin / Member (Admin only) */}
+          <Route
+            path="/add-user"
+            element={
+              <ProtectedRoute requireAdmin={true}>
+                <AddUserPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Public Route: Self Registration */}
+          <Route path="/register" element={<Register />} />
+        </Routes>
+      </Router>
+    </AuthProvider>
   );
 }
 

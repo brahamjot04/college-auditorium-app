@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        isSuperAdmin()
+      );
+    }
+
+    // 1. Users collection
+    match /users/{userId} {
+      // Direct reading of own profile NEVER recurses!
+      // Any user can read their own profile (by UID or matching verified email); Admins can read all profiles.
+      allow get: if isSignedIn() && (
+        request.auth.uid == userId ||
+        (request.auth.token.email != null && resource.data.email == request.auth.token.email) ||
+        isAdmin()
+      );
+
+      // Admins can list all users; Users can query their own email
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        (request.auth.token.email != null && resource.data.email == request.auth.token.email)
+      );
+
+      // Creation:
+      // Users can initialize their own profile; Admins can create profiles
+      allow create: if isSignedIn() && (
+        request.auth.uid == userId ||
+        isAdmin()
+      );
+
+      // Updates:
+      // Super Admin can update any profile.
+      // Regular Admins can manage non-admin accounts (cannot demote to staff and cannot touch other admins).
+      // Users can update their own non-role fields.
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          isAdmin() &&
+          resource.data.role != 'admin' &&
+          resource.data.role != 'superadmin' &&
+          request.resource.data.role != 'user'
+        ) ||
+        (
+          request.auth.uid == userId &&
+          request.resource.data.role == resource.data.role
+        )
+      );
+
+      // Only Super Admin can delete user documents
+      allow delete: if isSuperAdmin();
+    }
+
+    // 2. Events collection
+    match /events/{eventId} {
+      // All signed-in staff and admins can view events
+      allow read: if isSignedIn();
+
+      // Only Admins and Super Admins can create, edit, or delete events
+      allow write: if isAdmin();
+
+      // 3. Seats subcollection
+      match /seats/{seatId} {
+        allow read, create, update: if isSignedIn();
+        allow delete: if isAdmin();
+      }
+
+      // 4. Audit Activity Logs subcollection
+      match /activityLogs/{logId} {
+        allow read, create: if isSignedIn();
+        allow update, delete: if isAdmin();
+      }
+    }
+  }
+}

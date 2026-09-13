@@ -66,3 +66,55 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+/* =========================================================
+   SINGLE-PAGE PASS & DOCUMENT PRINT OPTIMIZATION
+   ========================================================= */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm;
+  }
+
+  html,
+  body,
+  #root {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    min-height: 0 !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    overflow: visible !important;
+    display: block !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  header,
+  nav,
+  footer,
+  button,
+  .d-print-none,
+  .no-print,
+  .modal-backdrop {
+    display: none !important;
+  }
+
+  .pass-card,
+  .gate-pass-card,
+  .pass-ticket-card,
+  [data-printable-pass] {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-before: avoid !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+    box-shadow: none !important;
+    border: 1.5px solid #cbd5e1 !important;
+    margin: 0 auto !important;
+    max-width: 430px !important;
+    width: 100% !important;
+    background: #ffffff !important;
+  }
+}

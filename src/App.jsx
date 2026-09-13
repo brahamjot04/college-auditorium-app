@@ -13,6 +13,8 @@ import NotFound from "./NotFound";
 import SeatingPage from "./SeatingPage";
 import CheckInPage from "./CheckInPage";
 import AddUserPage from "./AddUserPage";
+import ActivityLogsPage from "./ActivityLogsPage";
+import PassPage from "./PassPage";
 
 function RouteLoader() {
   const isDarkMode = localStorage.getItem("login_theme") === "dark";
@@ -134,6 +136,19 @@ function App() {
               </ProtectedRoute>
             }
           />
+
+          {/* Protected Route: Activity / Audit Logs (Admin only) */}
+          <Route
+            path="/logs/:eventId"
+            element={
+              <ProtectedRoute requireAdmin={true}>
+                <ActivityLogsPage />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Public Route: Digital Gate Pass */}
+          <Route path="/pass/:eventId/:seatId" element={<PassPage />} />
 
           {/* 404 Catch-All Route (Handles /register and any invalid paths) */}
           <Route path="*" element={<NotFound />} />

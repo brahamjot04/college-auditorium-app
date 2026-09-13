@@ -9,29 +9,46 @@ import {
   query,
   orderBy,
   onSnapshot,
+  getDocs,
+  writeBatch,
 } from "firebase/firestore";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import Navbar from "./Navbar";
 import Footer from "./Footer";
+import EventBrandingModal from "./EventBrandingModal";
 
 function Home() {
   const { isAdmin } = useAuth();
   const [events, setEvents] = useState([]);
   const [pendingUsers, setPendingUsers] = useState([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [brandingEvent, setBrandingEvent] = useState(null);
   const [eventsError, setEventsError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [activeTab, setActiveTab] = useState("upcoming"); // "upcoming" | "past"
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = sessionStorage.getItem("home_active_tab");
+    return saved === "past" || saved === "upcoming" ? saved : "upcoming";
+  });
+
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    sessionStorage.setItem("home_active_tab", tab);
+  };
 
   // Create Form State
   const [newEventName, setNewEventName] = useState("");
   const [eventDate, setEventDate] = useState("");
+  const [newEventTime, setNewEventTime] = useState("10:00 AM");
 
   // Edit Form State
   const [editingEvent, setEditingEvent] = useState(null);
   const [editName, setEditName] = useState("");
   const [editDate, setEditDate] = useState("");
+  const [editTime, setEditTime] = useState("10:00 AM");
+
+  // Three-dots popover menu state for event cards
+  const [activeMenuEventId, setActiveMenuEventId] = useState(null);
 
   // Theme state: reads from the same localStorage key as the login page (defaults to light)
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -110,6 +127,26 @@ function Home() {
     return () => unsubscribe();
   }, [isAdmin]);
 
+  // Close card action popover menu on outside click or Escape
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (!e.target.closest("[data-event-menu]")) {
+        setActiveMenuEventId(null);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setActiveMenuEventId(null);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleOutsideClick);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
   // ---------------------------------------------------------
   // 2. ACTIONS
   // ---------------------------------------------------------
@@ -123,30 +160,85 @@ function Home() {
       await addDoc(collection(db, "events"), {
         name: newEventName,
         date: eventDate,
+        time: newEventTime.trim() || "10:00 AM",
+        venue: "GNDEC Main Auditorium, Ludhiana",
         status: "active",
         createdAt: new Date(),
       });
       setNewEventName("");
       setEventDate("");
+      setNewEventTime("10:00 AM");
       setShowCreateModal(false);
     } catch (err) {
       alert("Error creating event: " + err.message);
     }
   };
 
-  // DELETE EVENT
+  // DELETE EVENT (WITH CASCADING SUBCOLLECTIONS CLEANUP)
   const handleDeleteEvent = async (eventId, eventName) => {
     if (
       !window.confirm(
-        `Are you sure you want to delete "${eventName}"?\n\nThis will remove the event from the list.`,
+        `Are you sure you want to delete "${eventName}"?\n\nThis will permanently remove the event, its booked seats, and all activity audit logs.`,
       )
     ) {
       return;
     }
 
     try {
+      // 1. Delete all documents in the "seats" subcollection
+      const seatsSnapshot = await getDocs(
+        collection(db, "events", eventId, "seats"),
+      );
+      if (!seatsSnapshot.empty) {
+        const seatChunks = [];
+        let currentBatch = writeBatch(db);
+        let count = 0;
+
+        seatsSnapshot.docs.forEach((docSnap) => {
+          currentBatch.delete(docSnap.ref);
+          count++;
+          if (count === 450) {
+            seatChunks.push(currentBatch);
+            currentBatch = writeBatch(db);
+            count = 0;
+          }
+        });
+        if (count > 0) seatChunks.push(currentBatch);
+
+        for (const b of seatChunks) {
+          await b.commit();
+        }
+      }
+
+      // 2. Delete all documents in the "activityLogs" subcollection
+      const logsSnapshot = await getDocs(
+        collection(db, "events", eventId, "activityLogs"),
+      );
+      if (!logsSnapshot.empty) {
+        const logChunks = [];
+        let currentBatch = writeBatch(db);
+        let count = 0;
+
+        logsSnapshot.docs.forEach((docSnap) => {
+          currentBatch.delete(docSnap.ref);
+          count++;
+          if (count === 450) {
+            logChunks.push(currentBatch);
+            currentBatch = writeBatch(db);
+            count = 0;
+          }
+        });
+        if (count > 0) logChunks.push(currentBatch);
+
+        for (const b of logChunks) {
+          await b.commit();
+        }
+      }
+
+      // 3. Delete the parent event document
       await deleteDoc(doc(db, "events", eventId));
     } catch (err) {
+      console.error("Error deleting event:", err);
       alert("Error deleting event: " + err.message);
     }
   };
@@ -156,6 +248,7 @@ function Home() {
     setEditingEvent(event);
     setEditName(event.name);
     setEditDate(event.date);
+    setEditTime(event.time || "10:00 AM");
   };
 
   // SAVE EDIT
@@ -167,6 +260,7 @@ function Home() {
       await updateDoc(doc(db, "events", editingEvent.id), {
         name: editName,
         date: editDate,
+        time: editTime.trim() || "10:00 AM",
       });
       setEditingEvent(null);
     } catch (err) {
@@ -621,7 +715,7 @@ function Home() {
         <div className="d-flex align-items-center flex-wrap gap-2 mb-4">
           <button
             type="button"
-            onClick={() => setActiveTab("upcoming")}
+            onClick={() => handleTabChange("upcoming")}
             style={{
               background:
                 activeTab === "upcoming"
@@ -683,7 +777,7 @@ function Home() {
 
           <button
             type="button"
-            onClick={() => setActiveTab("past")}
+            onClick={() => handleTabChange("past")}
             style={{
               background:
                 activeTab === "past"
@@ -930,107 +1024,286 @@ function Home() {
                           </span>
                         </div>
 
-                        {/* Admin Edit / Archive / Delete Actions */}
+                        {/* Admin Action Popover Menu */}
                         {isAdmin && (
-                          <div className="d-flex align-items-center gap-1">
-                            {/* Toggle Archive / Reopen Button */}
+                          <div className="position-relative" data-event-menu="true">
                             <button
                               type="button"
-                              onClick={() =>
-                                handleToggleEventStatus(event.id, event.name, isPast)
-                              }
-                              title={
-                                isPast
-                                  ? "Reopen event as Active"
-                                  : "Mark event as Completed / Archive"
-                              }
-                              style={{
-                                background: isPast
-                                  ? isDarkMode
-                                    ? "rgba(59, 130, 246, 0.15)"
-                                    : "rgba(219, 234, 254, 0.8)"
-                                  : isDarkMode
-                                    ? "rgba(245, 158, 11, 0.15)"
-                                    : "rgba(254, 243, 199, 0.8)",
-                                border: isPast
-                                  ? isDarkMode
-                                    ? "1px solid rgba(59, 130, 246, 0.35)"
-                                    : "1px solid rgba(147, 197, 253, 0.8)"
-                                  : isDarkMode
-                                    ? "1px solid rgba(245, 158, 11, 0.35)"
-                                    : "1px solid rgba(252, 211, 77, 0.8)",
-                                color: isPast
-                                  ? isDarkMode
-                                    ? "#93c5fd"
-                                    : "#1d4ed8"
-                                  : isDarkMode
-                                    ? "#fbbf24"
-                                    : "#b45309",
-                                borderRadius: "10px",
-                                padding: "4px 8px",
-                                fontSize: "0.78rem",
-                                fontWeight: 600,
-                                cursor: "pointer",
-                                transition: "all 0.15s ease",
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setActiveMenuEventId((prev) => (prev === event.id ? null : event.id));
                               }}
-                            >
-                              {isPast ? "🔄 Reopen" : "🏁 Archive"}
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => openEditModal(event)}
-                              title="Edit Event"
+                              aria-label="Event options"
+                              title="Event options"
                               style={{
                                 background: isDarkMode
-                                  ? "rgba(255, 255, 255, 0.08)"
-                                  : "rgba(255, 255, 255, 0.9)",
+                                  ? activeMenuEventId === event.id
+                                    ? "rgba(255, 255, 255, 0.15)"
+                                    : "rgba(255, 255, 255, 0.06)"
+                                  : activeMenuEventId === event.id
+                                    ? "rgba(0, 0, 0, 0.1)"
+                                    : "rgba(0, 0, 0, 0.04)",
                                 border: theme.inputBorder,
                                 color: theme.textPrimary,
                                 borderRadius: "10px",
-                                padding: "4px 9px",
-                                fontSize: "0.82rem",
+                                width: "32px",
+                                height: "32px",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                fontSize: "1.1rem",
+                                fontWeight: 700,
                                 cursor: "pointer",
                                 transition: "all 0.15s ease",
-                              }}
-                              onMouseEnter={(e) =>
-                                (e.currentTarget.style.borderColor = "#3b82f6")
-                              }
-                              onMouseLeave={(e) =>
-                                (e.currentTarget.style.borderColor = isDarkMode
-                                  ? "rgba(255, 255, 255, 0.12)"
-                                  : "rgba(203, 213, 225, 0.85)")
-                              }
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleDeleteEvent(event.id, event.name)
-                              }
-                              title="Delete Event"
-                              style={{
-                                background: "rgba(239, 68, 68, 0.1)",
-                                border: "1px solid rgba(239, 68, 68, 0.25)",
-                                color: "#ef4444",
-                                borderRadius: "10px",
-                                padding: "4px 9px",
-                                fontSize: "0.82rem",
-                                cursor: "pointer",
-                                transition: "all 0.15s ease",
-                              }}
-                              onMouseEnter={(e) => {
-                                e.currentTarget.style.background =
-                                  "rgba(239, 68, 68, 0.2)";
-                              }}
-                              onMouseLeave={(e) => {
-                                e.currentTarget.style.background =
-                                  "rgba(239, 68, 68, 0.1)";
+                                padding: 0,
+                                lineHeight: 1,
                               }}
                             >
-                              🗑️
+                              ⋮
                             </button>
+
+                            {activeMenuEventId === event.id && (
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: "calc(100% + 6px)",
+                                  right: 0,
+                                  zIndex: 100,
+                                  minWidth: "210px",
+                                  background: isDarkMode ? "#1e293b" : "#ffffff",
+                                  border: isDarkMode
+                                    ? "1px solid rgba(255, 255, 255, 0.14)"
+                                    : "1px solid rgba(0, 0, 0, 0.1)",
+                                  borderRadius: "14px",
+                                  boxShadow: isDarkMode
+                                    ? "0 12px 30px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.05)"
+                                    : "0 12px 30px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04)",
+                                  padding: "6px",
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "2px",
+                                  animation: "fadeIn 0.15s ease",
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: "0.68rem",
+                                    fontWeight: 700,
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.05em",
+                                    color: theme.textSecondary,
+                                    padding: "6px 10px 3px",
+                                  }}
+                                >
+                                  Configuration
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuEventId(null);
+                                    openEditModal(event);
+                                  }}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "9px",
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    borderRadius: "8px",
+                                    background: "transparent",
+                                    border: "none",
+                                    color: theme.textPrimary,
+                                    fontSize: "0.82rem",
+                                    fontWeight: 500,
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                    transition: "background 0.15s ease",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = isDarkMode
+                                      ? "rgba(255, 255, 255, 0.08)"
+                                      : "rgba(0, 0, 0, 0.05)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = "transparent";
+                                  }}
+                                >
+                                  <span>✏️</span>
+                                  <span>Edit Event</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuEventId(null);
+                                    setBrandingEvent(event);
+                                  }}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "9px",
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    borderRadius: "8px",
+                                    background: "transparent",
+                                    border: "none",
+                                    color: theme.textPrimary,
+                                    fontSize: "0.82rem",
+                                    fontWeight: 500,
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                    transition: "background 0.15s ease",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = isDarkMode
+                                      ? "rgba(255, 255, 255, 0.08)"
+                                      : "rgba(0, 0, 0, 0.05)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = "transparent";
+                                  }}
+                                >
+                                  <span>🎨</span>
+                                  <span>Pass Branding</span>
+                                </button>
+
+                                <div
+                                  style={{
+                                    fontSize: "0.68rem",
+                                    fontWeight: 700,
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.05em",
+                                    color: theme.textSecondary,
+                                    padding: "8px 10px 3px",
+                                    borderTop: isDarkMode
+                                      ? "1px solid rgba(255, 255, 255, 0.08)"
+                                      : "1px solid rgba(0, 0, 0, 0.06)",
+                                    marginTop: "2px",
+                                  }}
+                                >
+                                  Operations
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuEventId(null);
+                                    navigate(`/logs/${event.id}`);
+                                  }}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "9px",
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    borderRadius: "8px",
+                                    background: "transparent",
+                                    border: "none",
+                                    color: theme.textPrimary,
+                                    fontSize: "0.82rem",
+                                    fontWeight: 500,
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                    transition: "background 0.15s ease",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = isDarkMode
+                                      ? "rgba(255, 255, 255, 0.08)"
+                                      : "rgba(0, 0, 0, 0.05)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = "transparent";
+                                  }}
+                                >
+                                  <span>📜</span>
+                                  <span>Activity Logs</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuEventId(null);
+                                    handleToggleEventStatus(event.id, event.name, isPast);
+                                  }}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "9px",
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    borderRadius: "8px",
+                                    background: "transparent",
+                                    border: "none",
+                                    color: theme.textPrimary,
+                                    fontSize: "0.82rem",
+                                    fontWeight: 500,
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                    transition: "background 0.15s ease",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = isDarkMode
+                                      ? "rgba(255, 255, 255, 0.08)"
+                                      : "rgba(0, 0, 0, 0.05)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = "transparent";
+                                  }}
+                                >
+                                  <span>{isPast ? "🔄" : "🏁"}</span>
+                                  <span>{isPast ? "Reopen Event" : "Archive Event"}</span>
+                                </button>
+
+                                <div
+                                  style={{
+                                    height: "1px",
+                                    background: isDarkMode
+                                      ? "rgba(255, 255, 255, 0.08)"
+                                      : "rgba(0, 0, 0, 0.06)",
+                                    margin: "4px 4px",
+                                  }}
+                                />
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setActiveMenuEventId(null);
+                                    handleDeleteEvent(event.id, event.name);
+                                  }}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "9px",
+                                    width: "100%",
+                                    padding: "8px 10px",
+                                    borderRadius: "8px",
+                                    background: "transparent",
+                                    border: "none",
+                                    color: "#ef4444",
+                                    fontSize: "0.82rem",
+                                    fontWeight: 600,
+                                    cursor: "pointer",
+                                    textAlign: "left",
+                                    transition: "background 0.15s ease",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = "transparent";
+                                  }}
+                                >
+                                  <span>🗑️</span>
+                                  <span>Delete Event</span>
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1220,7 +1493,7 @@ function Home() {
                     color: theme.textPrimary,
                   }}
                 >
-                  Event Title
+                  Event Title <span style={{ color: "#ef4444" }}>*</span>
                 </label>
                 <input
                   type="text"
@@ -1228,6 +1501,37 @@ function Home() {
                   placeholder="e.g. Annual Cultural Fest 2026"
                   value={newEventName}
                   onChange={(e) => setNewEventName(e.target.value)}
+                  required
+                  style={{
+                    background: theme.inputBg,
+                    border: theme.inputBorder,
+                    color: theme.inputText,
+                    borderRadius: "14px",
+                    padding: "11px 14px",
+                    fontSize: "0.93rem",
+                    boxShadow: "none",
+                    outline: "none",
+                  }}
+                />
+              </div>
+
+              <div className="mb-3">
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "6px",
+                    fontSize: "0.84rem",
+                    fontWeight: 600,
+                    color: theme.textPrimary,
+                  }}
+                >
+                  Event Date <span style={{ color: "#ef4444" }}>*</span>
+                </label>
+                <input
+                  type="date"
+                  className="form-control home-input"
+                  value={eventDate}
+                  onChange={(e) => setEventDate(e.target.value)}
                   required
                   style={{
                     background: theme.inputBg,
@@ -1252,14 +1556,14 @@ function Home() {
                     color: theme.textPrimary,
                   }}
                 >
-                  Event Date
+                  Event Time (e.g. 10:00 AM)
                 </label>
                 <input
-                  type="date"
+                  type="text"
                   className="form-control home-input"
-                  value={eventDate}
-                  onChange={(e) => setEventDate(e.target.value)}
-                  required
+                  placeholder="e.g. 10:00 AM"
+                  value={newEventTime}
+                  onChange={(e) => setNewEventTime(e.target.value)}
                   style={{
                     background: theme.inputBg,
                     border: theme.inputBorder,
@@ -1418,7 +1722,7 @@ function Home() {
                 />
               </div>
 
-              <div className="mb-4">
+              <div className="mb-3">
                 <label
                   style={{
                     display: "block",
@@ -1436,6 +1740,37 @@ function Home() {
                   value={editDate}
                   onChange={(e) => setEditDate(e.target.value)}
                   required
+                  style={{
+                    background: theme.inputBg,
+                    border: theme.inputBorder,
+                    color: theme.inputText,
+                    borderRadius: "14px",
+                    padding: "11px 14px",
+                    fontSize: "0.93rem",
+                    boxShadow: "none",
+                    outline: "none",
+                  }}
+                />
+              </div>
+
+              <div className="mb-4">
+                <label
+                  style={{
+                    display: "block",
+                    marginBottom: "6px",
+                    fontSize: "0.84rem",
+                    fontWeight: 600,
+                    color: theme.textPrimary,
+                  }}
+                >
+                  Event Time (e.g. 10:00 AM)
+                </label>
+                <input
+                  type="text"
+                  className="form-control home-input"
+                  placeholder="e.g. 10:00 AM"
+                  value={editTime}
+                  onChange={(e) => setEditTime(e.target.value)}
                   style={{
                     background: theme.inputBg,
                     border: theme.inputBorder,
@@ -1487,6 +1822,16 @@ function Home() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* EVENT PASS BRANDING MODAL */}
+      {brandingEvent && (
+        <EventBrandingModal
+          eventId={brandingEvent.id}
+          eventData={brandingEvent}
+          onClose={() => setBrandingEvent(null)}
+          isDarkMode={isDarkMode}
+        />
       )}
 
       {/* FOOTER */}

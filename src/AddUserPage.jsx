@@ -9,7 +9,7 @@ import {
   signOut,
 } from "firebase/auth";
 import { doc, setDoc, getFirestore } from "firebase/firestore";
-import { db, firebaseConfig } from "./firebase";
+import { auth, db } from "./firebase";
 import { useAuth } from "./AuthContext";
 import Navbar from "./Navbar";
 import Footer from "./Footer";
@@ -158,7 +158,7 @@ function AddUserPage() {
       const secondaryAppName = "SecondaryApp";
       const secondaryApp =
         getApps().find((app) => app.name === secondaryAppName) ||
-        initializeApp(firebaseConfig, secondaryAppName);
+        initializeApp(auth.app.options, secondaryAppName);
       const secondaryAuth = getAuth(secondaryApp);
 
       let newUser = null;

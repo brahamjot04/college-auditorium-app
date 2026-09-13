@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { signOut } from "firebase/auth";
 import {
@@ -6,15 +6,79 @@ import {
   onSnapshot,
   doc,
   updateDoc,
+  getDoc,
+  setDoc,
 } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { useAuth } from "./AuthContext";
+import { uploadToGitHub, fetchImageFromGitHub } from "./utils/github";
+import { sendGatePassEmail } from "./utils/emailService";
 
 function Navbar({ isDarkMode = false }) {
   const { user, userName, isAdmin, isSuperAdmin } = useAuth();
   const [showStaffModal, setShowStaffModal] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const profileMenuRef = useRef(null);
   const [members, setMembers] = useState([]);
   const navigate = useNavigate();
+
+  // Settings Modal State
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsTab, setSettingsTab] = useState("email");
+  const [serviceId, setServiceId] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [publicKey, setPublicKey] = useState("");
+  const [orgTitle, setOrgTitle] = useState("Cultural Committee GNDEC");
+  const [subtitle, setSubtitle] = useState("GNDEC Main Auditorium, Ludhiana");
+  const [accentColor, setAccentColor] = useState("#2563eb");
+  const [entryNotes, setEntryNotes] = useState(
+    "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
+  );
+  const [logoPath, setLogoPath] = useState("");
+  const [logoPreview, setLogoPreview] = useState("");
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState("");
+  const [testRecipient, setTestRecipient] = useState("");
+  const [isSendingTest, setIsSendingTest] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  // Load system settings from Firestore
+  useEffect(() => {
+    if (!isAdmin) return;
+    getDoc(doc(db, "system_settings", "config"))
+      .then((snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.email) {
+            setServiceId(data.email.serviceId || "");
+            setTemplateId(data.email.templateId || "");
+            setPublicKey(data.email.publicKey || "");
+          }
+          if (data.branding) {
+            setOrgTitle(data.branding.orgTitle || "Cultural Committee GNDEC");
+            setSubtitle(data.branding.subtitle || "GNDEC Main Auditorium, Ludhiana");
+            setAccentColor(data.branding.accentColor || "#2563eb");
+            setEntryNotes(
+              data.branding.entryNotes ||
+                "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
+            );
+            if (data.branding.logoPath) {
+              setLogoPath(data.branding.logoPath);
+              fetchImageFromGitHub(data.branding.logoPath).then((url) => {
+                if (url) setLogoPreview(url);
+              });
+            }
+          }
+        } else {
+          // Defaults from working setup
+          setServiceId("service_og3ze6m");
+          setTemplateId("template_xbboh6j");
+          setPublicKey("PzNJuoItwBZtKTwOG");
+        }
+      })
+      .catch((err) => console.warn("Could not load system settings:", err));
+  }, [isAdmin, showSettingsModal]);
 
   // Listen to active members if user is admin
   useEffect(() => {
@@ -37,9 +101,36 @@ function Navbar({ isDarkMode = false }) {
     return () => unsubscribe();
   }, [isAdmin]);
 
+  // Close profile dropdown on outside click or Escape
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target)) {
+        setShowProfileMenu(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") setShowProfileMenu(false);
+    };
+    if (showProfileMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      window.addEventListener("keydown", handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showProfileMenu]);
+
   const activeMembers = members.filter(
     (u) => u.role === "superadmin" || u.role === "admin" || u.role === "user",
   );
+  const pendingUsersCount = members.filter((m) => m.role === "pending").length;
+  const userInitials = (userName || user?.displayName || user?.email || "U")
+    .split(" ")
+    .map((n) => n[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 
   // Logout with user confirmation
   const handleLogout = async () => {
@@ -48,6 +139,7 @@ function Navbar({ isDarkMode = false }) {
     );
     if (!confirmed) return;
 
+    sessionStorage.removeItem("home_active_tab");
     navigate("/?logged_out=true", { replace: true });
     await signOut(auth);
   };
@@ -102,6 +194,104 @@ function Navbar({ isDarkMode = false }) {
     }
   };
 
+  // Save Settings Handler
+  const handleSaveSettings = async (e) => {
+    if (e) e.preventDefault();
+    setIsSavingSettings(true);
+    setSaveSuccessMsg("");
+
+    try {
+      await setDoc(
+        doc(db, "system_settings", "config"),
+        {
+          email: {
+            serviceId: serviceId.trim(),
+            templateId: templateId.trim(),
+            publicKey: publicKey.trim(),
+          },
+          branding: {
+            orgTitle: orgTitle.trim(),
+            subtitle: subtitle.trim(),
+            accentColor: accentColor.trim(),
+            entryNotes: entryNotes.trim(),
+            logoPath: logoPath.trim(),
+          },
+          updatedAt: new Date(),
+          updatedByName: userName || user?.email || "Admin",
+        },
+        { merge: true },
+      );
+
+      setSaveSuccessMsg("✅ Settings saved successfully! Changes apply instantly across the portal.");
+      setTimeout(() => setSaveSuccessMsg(""), 4000);
+    } catch (err) {
+      console.error("Failed to save settings:", err);
+      const isPermError =
+        err?.code === "permission-denied" ||
+        err?.message?.toLowerCase().includes("permission");
+      if (isPermError) {
+        alert(
+          "Permission Denied: Firebase Firestore security rules blocked writing to 'system_settings/config'.\n\nPlease copy and publish the updated firestore.rules in your Firebase Console (Firestore Database -> Rules tab).",
+        );
+      } else {
+        alert("Failed to save settings: " + err.message);
+      }
+    } finally {
+      setIsSavingSettings(false);
+    }
+  };
+
+  // Upload Logo Handler
+  const handleLogoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      alert("Please upload an image file (PNG, JPG, SVG, WebP).");
+      return;
+    }
+
+    setIsUploadingLogo(true);
+    try {
+      const path = await uploadToGitHub(file, file.name, "auditorium-assets");
+      if (path) {
+        setLogoPath(path);
+        const dataUrl = await fetchImageFromGitHub(path);
+        if (dataUrl) setLogoPreview(dataUrl);
+      }
+    } catch (err) {
+      console.error("Logo upload error:", err);
+    } finally {
+      setIsUploadingLogo(false);
+    }
+  };
+
+  // Send Test Email Handler
+  const handleSendTestEmail = async (e) => {
+    e.preventDefault();
+    if (!testRecipient) return;
+
+    setIsSendingTest(true);
+    setTestResult(null);
+
+    const res = await sendGatePassEmail({
+      emailConfig: { serviceId, templateId, publicKey },
+      brandingConfig: { orgTitle, subtitle, entryNotes, accentColor },
+      eventName: "Sample Orientation & Cultural Gala",
+      eventDate: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      eventTime: "10:30 AM",
+      venue: subtitle || "GNDEC Main Auditorium",
+      guestName: userName || "Auditorium Guest",
+      guestEmail: testRecipient,
+      guestContact: "9876543210",
+      seatLabel: "Row A - Seat 1",
+      passUrl: `${window.location.origin}/pass/test_sample_pass`,
+    });
+
+    setIsSendingTest(false);
+    setTestResult(res);
+  };
+
   // Color tokens
   const navTheme = {
     bg: isDarkMode ? "rgba(15, 23, 42, 0.85)" : "rgba(255, 255, 255, 0.88)",
@@ -125,6 +315,15 @@ function Navbar({ isDarkMode = false }) {
       ? "1px solid rgba(255, 255, 255, 0.12)"
       : "1px solid rgba(203, 213, 225, 0.8)",
     cardBg: isDarkMode ? "rgba(15, 23, 42, 0.7)" : "rgba(241, 245, 249, 0.8)",
+    cardBorder: isDarkMode
+      ? "1px solid rgba(255, 255, 255, 0.08)"
+      : "1px solid rgba(203, 213, 225, 0.85)",
+    inputBg: isDarkMode ? "rgba(15, 23, 42, 0.75)" : "#ffffff",
+    inputBorder: isDarkMode
+      ? "1px solid rgba(255, 255, 255, 0.12)"
+      : "1px solid #cbd5e1",
+    inputText: isDarkMode ? "#f8fafc" : "#0f172a",
+    inputPlaceholder: isDarkMode ? "#94a3b8" : "#64748b",
   };
 
   return (
@@ -137,7 +336,7 @@ function Navbar({ isDarkMode = false }) {
           borderBottom: navTheme.border,
           position: "sticky",
           top: 0,
-          zIndex: 1020,
+          zIndex: 1050,
           padding: "14px 0",
           boxShadow: navTheme.shadow,
         }}
@@ -215,126 +414,319 @@ function Navbar({ isDarkMode = false }) {
             </div>
           </div>
 
-          {/* User Profile Info & Controls */}
-          <div className="d-flex align-items-center flex-wrap gap-2">
-            {/* User Pill */}
-            <div
+          {/* User Profile Avatar Dropdown */}
+          <div style={{ position: "relative" }} ref={profileMenuRef}>
+            <button
+              type="button"
+              onClick={() => setShowProfileMenu((prev) => !prev)}
+              aria-expanded={showProfileMenu}
+              aria-label="User profile menu"
               style={{
                 background: navTheme.pillBg,
                 border: navTheme.pillBorder,
                 borderRadius: "30px",
-                padding: "6px 14px",
-                fontSize: "0.82rem",
+                padding: "5px 14px 5px 6px",
                 display: "flex",
                 alignItems: "center",
-                gap: "8px",
-              }}
-            >
-              <span style={{ color: navTheme.textSecondary }}>Signed in as</span>
-              <strong style={{ color: navTheme.textPrimary }}>{userName}</strong>
-              <span
-                style={{
-                  borderRadius: "20px",
-                  padding: "2px 8px",
-                  fontSize: "0.74rem",
-                  fontWeight: 600,
-                  background: isSuperAdmin
-                    ? "rgba(239, 68, 68, 0.2)"
-                    : isAdmin
-                      ? "rgba(59, 130, 246, 0.2)"
-                      : "rgba(16, 185, 129, 0.2)",
-                  color: isSuperAdmin
-                    ? "#f87171"
-                    : isAdmin
-                      ? "#60a5fa"
-                      : "#34d399",
-                  border: isSuperAdmin
-                    ? "1px solid rgba(239, 68, 68, 0.4)"
-                    : isAdmin
-                      ? "1px solid rgba(59, 130, 246, 0.4)"
-                      : "1px solid rgba(16, 185, 129, 0.4)",
-                }}
-              >
-                {isSuperAdmin
-                  ? "👑 Super Admin"
-                  : isAdmin
-                    ? "🛡️ Admin"
-                    : "👤 Staff"}
-              </span>
-            </div>
-
-            {/* Manage Staff Button (Admin Only) */}
-            {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setShowStaffModal(true)}
-                style={{
-                  background: isDarkMode
-                    ? "rgba(255, 255, 255, 0.08)"
-                    : "rgba(255, 255, 255, 0.9)",
-                  border: navTheme.btnBorder,
-                  color: navTheme.textPrimary,
-                  borderRadius: "14px",
-                  padding: "7px 14px",
-                  fontSize: "0.84rem",
-                  fontWeight: 600,
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  cursor: "pointer",
-                  transition: "all 0.2s ease",
-                }}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.borderColor = "#3b82f6")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.borderColor = isDarkMode
-                    ? "rgba(255, 255, 255, 0.12)"
-                    : "rgba(203, 213, 225, 0.85)")
-                }
-              >
-                <span>👥 Manage Staff</span>
-                <span
-                  style={{
-                    background: "#2563eb",
-                    color: "#ffffff",
-                    borderRadius: "20px",
-                    padding: "1px 7px",
-                    fontSize: "0.72rem",
-                    fontWeight: 700,
-                  }}
-                >
-                  {activeMembers.length}
-                </span>
-              </button>
-            )}
-
-            {/* Logout Button with Confirmation */}
-            <button
-              type="button"
-              onClick={handleLogout}
-              style={{
-                background: "rgba(239, 68, 68, 0.12)",
-                border: "1px solid rgba(239, 68, 68, 0.3)",
-                color: isDarkMode ? "#fca5a5" : "#b91c1c",
-                borderRadius: "14px",
-                padding: "7px 14px",
-                fontSize: "0.84rem",
-                fontWeight: 600,
+                gap: "10px",
                 cursor: "pointer",
                 transition: "all 0.2s ease",
+                boxShadow: showProfileMenu
+                  ? "0 0 0 3px rgba(37, 99, 235, 0.25)"
+                  : "none",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(239, 68, 68, 0.22)";
-                e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.5)";
+                e.currentTarget.style.borderColor = "#3b82f6";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(239, 68, 68, 0.12)";
-                e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.3)";
+                e.currentTarget.style.borderColor = isDarkMode
+                  ? "rgba(59, 130, 246, 0.3)"
+                  : "rgba(147, 197, 253, 0.8)";
               }}
             >
-              Logout
+              {/* Avatar Circle */}
+              <div
+                style={{
+                  position: "relative",
+                  width: "32px",
+                  height: "32px",
+                  borderRadius: "50%",
+                  background: isSuperAdmin
+                    ? "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)"
+                    : isAdmin
+                      ? "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)"
+                      : "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                  color: "#ffffff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "0.82rem",
+                  fontWeight: 700,
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                }}
+              >
+                {userInitials}
+                {pendingUsersCount > 0 && (
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: "-2px",
+                      right: "-2px",
+                      width: "10px",
+                      height: "10px",
+                      borderRadius: "50%",
+                      background: "#ef4444",
+                      border: "2px solid #ffffff",
+                    }}
+                    title={`${pendingUsersCount} pending approval request(s)`}
+                  />
+                )}
+              </div>
+
+              {/* User Name & Role Label */}
+              <div style={{ textAlign: "left", lineHeight: 1.2 }}>
+                <div
+                  style={{
+                    fontSize: "0.84rem",
+                    fontWeight: 600,
+                    color: navTheme.textPrimary,
+                    maxWidth: "140px",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {userName || "Staff"}
+                </div>
+                <div
+                  style={{
+                    fontSize: "0.7rem",
+                    color: isSuperAdmin
+                      ? "#f87171"
+                      : isAdmin
+                        ? "#60a5fa"
+                        : "#34d399",
+                    fontWeight: 600,
+                  }}
+                >
+                  {isSuperAdmin
+                    ? "👑 Super Admin"
+                    : isAdmin
+                      ? "🛡️ Admin"
+                      : "👤 Staff"}
+                </div>
+              </div>
+
+              {/* Caret */}
+              <span
+                style={{
+                  fontSize: "0.68rem",
+                  color: navTheme.textSecondary,
+                  transition: "transform 0.2s ease",
+                  transform: showProfileMenu ? "rotate(180deg)" : "rotate(0deg)",
+                }}
+              >
+                ▼
+              </span>
             </button>
+
+            {/* Dropdown Menu Popover */}
+            {showProfileMenu && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 8px)",
+                  right: 0,
+                  width: "250px",
+                  background: navTheme.modalCardBg,
+                  border: navTheme.modalBorder,
+                  borderRadius: "18px",
+                  boxShadow: isDarkMode
+                    ? "0 25px 55px -5px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.08)"
+                    : "0 20px 45px -5px rgba(30, 58, 138, 0.2), 0 0 0 1px rgba(203, 213, 225, 0.8)",
+                  backdropFilter: "blur(20px)",
+                  WebkitBackdropFilter: "blur(20px)",
+                  padding: "8px",
+                  zIndex: 1060,
+                  animation: "profileMenuPop 0.15s cubic-bezier(0.16, 1, 0.3, 1)",
+                }}
+              >
+                <style>{`
+                  @keyframes profileMenuPop {
+                    from { opacity: 0; transform: scale(0.95) translateY(-6px); }
+                    to { opacity: 1; transform: scale(1) translateY(0); }
+                  }
+                `}</style>
+
+                {/* Profile Header */}
+                <div
+                  style={{
+                    padding: "10px 12px",
+                    borderBottom: isDarkMode
+                      ? "1px solid rgba(255, 255, 255, 0.08)"
+                      : "1px solid #f1f5f9",
+                    marginBottom: "4px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: "0.86rem",
+                      fontWeight: 700,
+                      color: navTheme.textPrimary,
+                    }}
+                  >
+                    {userName || "Auditorium User"}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "0.75rem",
+                      color: navTheme.textSecondary,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {user?.email || ""}
+                  </div>
+                </div>
+
+                {/* Admin Actions */}
+                {isAdmin && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowProfileMenu(false);
+                        setShowStaffModal(true);
+                      }}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "9px 12px",
+                        background: "transparent",
+                        border: "none",
+                        borderRadius: "10px",
+                        color: navTheme.textPrimary,
+                        fontSize: "0.84rem",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "background 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = isDarkMode
+                          ? "rgba(255, 255, 255, 0.08)"
+                          : "rgba(0, 0, 0, 0.05)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <span className="d-flex align-items-center gap-2">
+                        <span>👥</span>
+                        <span>Manage Staff</span>
+                      </span>
+                      <span
+                        style={{
+                          background: pendingUsersCount > 0 ? "#ef4444" : "#2563eb",
+                          color: "#ffffff",
+                          borderRadius: "20px",
+                          padding: "1px 7px",
+                          fontSize: "0.7rem",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {pendingUsersCount > 0
+                          ? `${pendingUsersCount} pending`
+                          : activeMembers.length}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowProfileMenu(false);
+                        setShowSettingsModal(true);
+                      }}
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        padding: "9px 12px",
+                        background: "transparent",
+                        border: "none",
+                        borderRadius: "10px",
+                        color: navTheme.textPrimary,
+                        fontSize: "0.84rem",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "background 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = isDarkMode
+                          ? "rgba(255, 255, 255, 0.08)"
+                          : "rgba(0, 0, 0, 0.05)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <span>⚙️</span>
+                      <span>Portal Settings</span>
+                    </button>
+                  </>
+                )}
+
+                {/* Divider */}
+                <div
+                  style={{
+                    height: "1px",
+                    background: isDarkMode
+                      ? "rgba(255, 255, 255, 0.08)"
+                      : "rgba(0, 0, 0, 0.06)",
+                    margin: "6px 0",
+                  }}
+                />
+
+                {/* Sign Out */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowProfileMenu(false);
+                    handleLogout();
+                  }}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "9px 12px",
+                    background: "transparent",
+                    border: "none",
+                    borderRadius: "10px",
+                    color: "#ef4444",
+                    fontSize: "0.84rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    textAlign: "left",
+                    transition: "background 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = "rgba(239, 68, 68, 0.12)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "transparent";
+                  }}
+                >
+                  <span>🚪</span>
+                  <span>Sign Out</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -738,6 +1130,917 @@ function Navbar({ isDarkMode = false }) {
                 }}
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. SYSTEM SETTINGS & BRANDING MODAL (Redesigned to match Manage Staff UI/UX) */}
+      {showSettingsModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(4, 7, 14, 0.72)",
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowSettingsModal(false);
+          }}
+        >
+          <div
+            style={{
+              background: navTheme.modalCardBg,
+              border: navTheme.modalBorder,
+              borderRadius: "24px",
+              boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
+              maxWidth: "760px",
+              width: "100%",
+              maxHeight: "88vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              position: "relative",
+              color: navTheme.textPrimary,
+              animation: "settingsModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            <style>{`
+              @keyframes settingsModalPop {
+                from { opacity: 0; transform: scale(0.96) translateY(10px); }
+                to { opacity: 1; transform: scale(1) translateY(0); }
+              }
+            `}</style>
+
+            {/* Modal Header (Matching Manage Staff Header) */}
+            <div
+              style={{
+                padding: "20px 26px",
+                borderBottom: navTheme.border,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div className="d-flex align-items-center gap-3">
+                <h4
+                  style={{
+                    margin: 0,
+                    fontWeight: 700,
+                    fontSize: "1.25rem",
+                    color: navTheme.textPrimary,
+                  }}
+                >
+                  ⚙️ Portal & Gate Pass Settings
+                </h4>
+                <span
+                  style={{
+                    background: "#2563eb",
+                    color: "#ffffff",
+                    borderRadius: "20px",
+                    padding: "2px 10px",
+                    fontSize: "0.78rem",
+                    fontWeight: 700,
+                  }}
+                >
+                  ⚙️ System Config
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(false)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: navTheme.textSecondary,
+                  fontSize: "1.3rem",
+                  cursor: "pointer",
+                  padding: "4px 8px",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Segmented Pill Tab Bar (Matching Manage Staff / Home Pill Styles) */}
+            <div
+              style={{
+                padding: "14px 26px",
+                borderBottom: navTheme.border,
+                display: "flex",
+                gap: "10px",
+                background: isDarkMode
+                  ? "rgba(15, 23, 42, 0.45)"
+                  : "rgba(248, 250, 252, 0.75)",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setSettingsTab("email")}
+                style={{
+                  background:
+                    settingsTab === "email"
+                      ? isDarkMode
+                        ? "linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)"
+                        : "linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)"
+                      : isDarkMode
+                        ? "rgba(255, 255, 255, 0.05)"
+                        : "rgba(0, 0, 0, 0.04)",
+                  border:
+                    settingsTab === "email"
+                      ? "1px solid rgba(59, 130, 246, 0.55)"
+                      : navTheme.border,
+                  color: settingsTab === "email" ? "#ffffff" : navTheme.textSecondary,
+                  borderRadius: "14px",
+                  padding: "8px 18px",
+                  fontWeight: settingsTab === "email" ? 700 : 600,
+                  fontSize: "0.85rem",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  transition: "all 0.2s ease",
+                  boxShadow:
+                    settingsTab === "email"
+                      ? "0 4px 14px rgba(37, 99, 235, 0.28)"
+                      : "none",
+                }}
+              >
+                <span>📧</span>
+                <span>Email Delivery (EmailJS)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSettingsTab("branding")}
+                style={{
+                  background:
+                    settingsTab === "branding"
+                      ? isDarkMode
+                        ? "linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)"
+                        : "linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)"
+                      : isDarkMode
+                        ? "rgba(255, 255, 255, 0.05)"
+                        : "rgba(0, 0, 0, 0.04)",
+                  border:
+                    settingsTab === "branding"
+                      ? "1px solid rgba(59, 130, 246, 0.55)"
+                      : navTheme.border,
+                  color: settingsTab === "branding" ? "#ffffff" : navTheme.textSecondary,
+                  borderRadius: "14px",
+                  padding: "8px 18px",
+                  fontWeight: settingsTab === "branding" ? 700 : 600,
+                  fontSize: "0.85rem",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  transition: "all 0.2s ease",
+                  boxShadow:
+                    settingsTab === "branding"
+                      ? "0 4px 14px rgba(37, 99, 235, 0.28)"
+                      : "none",
+                }}
+              >
+                <span>🎨</span>
+                <span>Pass Branding & Logo</span>
+              </button>
+            </div>
+
+            {/* Modal Body with Scrollable Card Sections */}
+            <div
+              style={{
+                padding: "24px 26px",
+                overflowY: "auto",
+                maxHeight: "65vh",
+                display: "flex",
+                flexDirection: "column",
+                gap: "18px",
+              }}
+            >
+              {saveSuccessMsg && (
+                <div
+                  style={{
+                    background: "rgba(16, 185, 129, 0.15)",
+                    border: "1px solid rgba(16, 185, 129, 0.4)",
+                    color: "#10b981",
+                    borderRadius: "14px",
+                    padding: "12px 18px",
+                    fontSize: "0.86rem",
+                    fontWeight: 600,
+                  }}
+                >
+                  {saveSuccessMsg}
+                </div>
+              )}
+
+              {/* TAB 1: EMAIL CONFIGURATION */}
+              {settingsTab === "email" && (
+                <>
+                  {/* Card 1: EmailJS Service Credentials */}
+                  {(() => {
+                    const isConfigured = Boolean(
+                      serviceId.trim() && templateId.trim() && publicKey.trim(),
+                    );
+
+                    return (
+                      <div
+                        style={{
+                          background: navTheme.cardBg,
+                          border: navTheme.border,
+                          borderRadius: "18px",
+                          padding: "18px 20px",
+                        }}
+                      >
+                        <div className="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3 pb-2 border-bottom border-secondary border-opacity-25">
+                          <div>
+                            <div
+                              style={{
+                                fontWeight: 700,
+                                fontSize: "0.95rem",
+                                color: navTheme.textPrimary,
+                              }}
+                            >
+                              📧 EmailJS Service Credentials
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "0.78rem",
+                                color: navTheme.textSecondary,
+                                marginTop: "2px",
+                              }}
+                            >
+                              Enables automatic digital pass dispatch to attendee inboxes without a backend server.
+                            </div>
+                          </div>
+                          <span
+                            style={{
+                              borderRadius: "20px",
+                              padding: "3px 10px",
+                              fontSize: "0.74rem",
+                              fontWeight: 700,
+                              background: isConfigured
+                                ? isDarkMode
+                                  ? "rgba(16, 185, 129, 0.18)"
+                                  : "rgba(16, 185, 129, 0.15)"
+                                : isDarkMode
+                                  ? "rgba(245, 158, 11, 0.2)"
+                                  : "rgba(245, 158, 11, 0.15)",
+                              color: isConfigured
+                                ? isDarkMode
+                                  ? "#6ee7b7"
+                                  : "#047857"
+                                : isDarkMode
+                                  ? "#fbbf24"
+                                  : "#b45309",
+                              border: isConfigured
+                                ? "1px solid rgba(16, 185, 129, 0.35)"
+                                : "1px solid rgba(245, 158, 11, 0.35)",
+                            }}
+                          >
+                            {isConfigured ? "🟢 Ready for Gate Passes" : "⚠️ Credentials Incomplete"}
+                          </span>
+                        </div>
+
+                        <div className="row g-3">
+                          <div className="col-12 col-md-6">
+                            <label
+                              style={{
+                                display: "block",
+                                fontSize: "0.82rem",
+                                fontWeight: 600,
+                                marginBottom: "6px",
+                                color: navTheme.textPrimary,
+                              }}
+                            >
+                              Service ID <span style={{ color: "#ef4444" }}>*</span>
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. service_og3ze6m"
+                              value={serviceId}
+                              onChange={(e) => setServiceId(e.target.value)}
+                              style={{
+                                width: "100%",
+                                background: navTheme.inputBg,
+                                border: navTheme.inputBorder,
+                                borderRadius: "12px",
+                                padding: "9px 12px",
+                                color: navTheme.inputText,
+                                fontSize: "0.88rem",
+                                fontFamily: "monospace",
+                                outline: "none",
+                              }}
+                            />
+                          </div>
+
+                          <div className="col-12 col-md-6">
+                            <label
+                              style={{
+                                display: "block",
+                                fontSize: "0.82rem",
+                                fontWeight: 600,
+                                marginBottom: "6px",
+                                color: navTheme.textPrimary,
+                              }}
+                            >
+                              Template ID <span style={{ color: "#ef4444" }}>*</span>
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. template_xbboh6j"
+                              value={templateId}
+                              onChange={(e) => setTemplateId(e.target.value)}
+                              style={{
+                                width: "100%",
+                                background: navTheme.inputBg,
+                                border: navTheme.inputBorder,
+                                borderRadius: "12px",
+                                padding: "9px 12px",
+                                color: navTheme.inputText,
+                                fontSize: "0.88rem",
+                                fontFamily: "monospace",
+                                outline: "none",
+                              }}
+                            />
+                          </div>
+
+                          <div className="col-12">
+                            <label
+                              style={{
+                                display: "block",
+                                fontSize: "0.82rem",
+                                fontWeight: 600,
+                                marginBottom: "6px",
+                                color: navTheme.textPrimary,
+                              }}
+                            >
+                              Public Key (User ID) <span style={{ color: "#ef4444" }}>*</span>
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="e.g. PzNJuoItwBZtKTwOG"
+                              value={publicKey}
+                              onChange={(e) => setPublicKey(e.target.value)}
+                              style={{
+                                width: "100%",
+                                background: navTheme.inputBg,
+                                border: navTheme.inputBorder,
+                                borderRadius: "12px",
+                                padding: "9px 12px",
+                                color: navTheme.inputText,
+                                fontSize: "0.88rem",
+                                fontFamily: "monospace",
+                                outline: "none",
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Card 2: Interactive Test Email Dispatch */}
+                  <div
+                    style={{
+                      background: navTheme.cardBg,
+                      border: navTheme.border,
+                      borderRadius: "18px",
+                      padding: "18px 20px",
+                    }}
+                  >
+                    <div className="mb-3">
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: "0.95rem",
+                          color: navTheme.textPrimary,
+                        }}
+                      >
+                        🧪 Test Pass Email Dispatch
+                      </div>
+                      <div
+                        style={{
+                          fontSize: "0.78rem",
+                          color: navTheme.textSecondary,
+                          marginTop: "2px",
+                        }}
+                      >
+                        Send an instant live pass email to verify that your EmailJS keys are functioning.
+                      </div>
+                    </div>
+
+                    <div className="d-flex flex-wrap gap-2">
+                      <input
+                        type="email"
+                        placeholder="Enter recipient email (e.g. yourname@college.ac.in)..."
+                        value={testRecipient}
+                        onChange={(e) => setTestRecipient(e.target.value)}
+                        style={{
+                          flex: 1,
+                          minWidth: "220px",
+                          background: navTheme.inputBg,
+                          border: navTheme.inputBorder,
+                          borderRadius: "12px",
+                          padding: "9px 12px",
+                          color: navTheme.inputText,
+                          fontSize: "0.88rem",
+                          outline: "none",
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSendTestEmail}
+                        disabled={isSendingTest || !testRecipient}
+                        style={{
+                          background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                          border: "none",
+                          color: "#ffffff",
+                          borderRadius: "12px",
+                          padding: "9px 18px",
+                          fontSize: "0.84rem",
+                          fontWeight: 600,
+                          cursor: isSendingTest || !testRecipient ? "not-allowed" : "pointer",
+                          boxShadow: "0 4px 12px rgba(37, 99, 235, 0.25)",
+                          opacity: isSendingTest || !testRecipient ? 0.65 : 1,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {isSendingTest ? "Sending Test..." : "🚀 Send Test Pass"}
+                      </button>
+                    </div>
+
+                    {testResult && (
+                      <div
+                        style={{
+                          marginTop: "12px",
+                          fontSize: "0.82rem",
+                          fontWeight: 600,
+                          padding: "8px 12px",
+                          borderRadius: "10px",
+                          background: testResult.success
+                            ? "rgba(16, 185, 129, 0.15)"
+                            : "rgba(239, 68, 68, 0.15)",
+                          color: testResult.success ? "#10b981" : "#ef4444",
+                          border: testResult.success
+                            ? "1px solid rgba(16, 185, 129, 0.3)"
+                            : "1px solid rgba(239, 68, 68, 0.3)",
+                        }}
+                      >
+                        {testResult.success
+                          ? "✅ Test pass email dispatched successfully! Check your inbox."
+                          : `❌ Dispatch Failed: ${testResult.error}`}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* TAB 2: PASS BRANDING & LOGO */}
+              {settingsTab === "branding" && (
+                <>
+                  {/* Card 1: Live Pass Header Preview */}
+                  <div
+                    style={{
+                      background: navTheme.cardBg,
+                      border: navTheme.border,
+                      borderRadius: "18px",
+                      padding: "18px 20px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: "0.76rem",
+                        fontWeight: 700,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.8px",
+                        color: navTheme.textSecondary,
+                        marginBottom: "10px",
+                      }}
+                    >
+                      Live Pass Header Preview (Global Default)
+                    </div>
+                    <div
+                      style={{
+                        background: isDarkMode ? "#070c18" : "#f1f5f9",
+                        border: navTheme.border,
+                        borderRadius: "16px",
+                        padding: "16px",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "14px",
+                      }}
+                    >
+                      {logoPreview ? (
+                        <img
+                          src={logoPreview}
+                          alt="Logo"
+                          style={{
+                            width: "52px",
+                            height: "52px",
+                            borderRadius: "14px",
+                            objectFit: "cover",
+                            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: "52px",
+                            height: "52px",
+                            borderRadius: "14px",
+                            background: accentColor,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            color: "#ffffff",
+                            fontSize: "1.4rem",
+                            fontWeight: 700,
+                            boxShadow: "0 4px 14px rgba(0,0,0,0.18)",
+                          }}
+                        >
+                          🏛️
+                        </div>
+                      )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontWeight: 700,
+                            fontSize: "1.05rem",
+                            color: navTheme.textPrimary,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {orgTitle || "Cultural Committee GNDEC"}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "0.8rem",
+                            color: navTheme.textSecondary,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {subtitle || "GNDEC Main Auditorium, Ludhiana"}
+                        </div>
+                        <div
+                          style={{
+                            display: "inline-block",
+                            marginTop: "6px",
+                            background: accentColor,
+                            color: "#ffffff",
+                            fontSize: "0.7rem",
+                            fontWeight: 700,
+                            padding: "2px 8px",
+                            borderRadius: "6px",
+                          }}
+                        >
+                          Official Gate Pass
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card 2: Organization & Venue Names */}
+                  <div
+                    style={{
+                      background: navTheme.cardBg,
+                      border: navTheme.border,
+                      borderRadius: "18px",
+                      padding: "18px 20px",
+                    }}
+                  >
+                    <div className="row g-3">
+                      <div className="col-12 col-md-6">
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            marginBottom: "6px",
+                            color: navTheme.textPrimary,
+                          }}
+                        >
+                          Organization / Committee Title
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Cultural Committee GNDEC"
+                          value={orgTitle}
+                          onChange={(e) => setOrgTitle(e.target.value)}
+                          style={{
+                            width: "100%",
+                            background: navTheme.inputBg,
+                            border: navTheme.inputBorder,
+                            borderRadius: "12px",
+                            padding: "9px 12px",
+                            color: navTheme.inputText,
+                            fontSize: "0.88rem",
+                            outline: "none",
+                          }}
+                        />
+                      </div>
+
+                      <div className="col-12 col-md-6">
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            marginBottom: "6px",
+                            color: navTheme.textPrimary,
+                          }}
+                        >
+                          Auditorium Venue / Subtitle
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. GNDEC Main Auditorium, Ludhiana"
+                          value={subtitle}
+                          onChange={(e) => setSubtitle(e.target.value)}
+                          style={{
+                            width: "100%",
+                            background: navTheme.inputBg,
+                            border: navTheme.inputBorder,
+                            borderRadius: "12px",
+                            padding: "9px 12px",
+                            color: navTheme.inputText,
+                            fontSize: "0.88rem",
+                            outline: "none",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card 3: Pass Accent Color */}
+                  <div
+                    style={{
+                      background: navTheme.cardBg,
+                      border: navTheme.border,
+                      borderRadius: "18px",
+                      padding: "18px 20px",
+                    }}
+                  >
+                    <label
+                      style={{
+                        display: "block",
+                        fontSize: "0.82rem",
+                        fontWeight: 600,
+                        marginBottom: "8px",
+                        color: navTheme.textPrimary,
+                      }}
+                    >
+                      Default Pass Accent / Theme Color
+                    </label>
+                    <div className="d-flex flex-wrap align-items-center gap-2">
+                      {["#2563eb", "#4f46e5", "#7c3aed", "#059669", "#dc2626", "#d97706", "#0f172a"].map(
+                        (c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() => setAccentColor(c)}
+                            style={{
+                              width: "30px",
+                              height: "30px",
+                              borderRadius: "50%",
+                              background: c,
+                              border:
+                                accentColor.toLowerCase() === c.toLowerCase()
+                                  ? "3px solid #ffffff"
+                                  : "2px solid transparent",
+                              outline:
+                                accentColor.toLowerCase() === c.toLowerCase()
+                                  ? `2px solid ${c}`
+                                  : "none",
+                              cursor: "pointer",
+                              transition: "transform 0.15s ease",
+                              transform:
+                                accentColor.toLowerCase() === c.toLowerCase()
+                                  ? "scale(1.15)"
+                                  : "scale(1)",
+                            }}
+                          />
+                        ),
+                      )}
+                      <input
+                        type="color"
+                        value={accentColor}
+                        onChange={(e) => setAccentColor(e.target.value)}
+                        style={{
+                          width: "36px",
+                          height: "32px",
+                          borderRadius: "8px",
+                          border: "none",
+                          cursor: "pointer",
+                          background: "none",
+                          padding: 0,
+                        }}
+                        title="Pick custom color"
+                      />
+                      <input
+                        type="text"
+                        value={accentColor}
+                        onChange={(e) => setAccentColor(e.target.value)}
+                        style={{
+                          width: "90px",
+                          background: navTheme.inputBg,
+                          border: navTheme.inputBorder,
+                          borderRadius: "8px",
+                          padding: "4px 8px",
+                          color: navTheme.inputText,
+                          fontSize: "0.82rem",
+                          fontFamily: "monospace",
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Card 4: GitHub-Hosted Logo */}
+                  <div
+                    style={{
+                      background: navTheme.cardBg,
+                      border: navTheme.border,
+                      borderRadius: "18px",
+                      padding: "18px 20px",
+                    }}
+                  >
+                    <label
+                      style={{
+                        display: "block",
+                        fontSize: "0.82rem",
+                        fontWeight: 600,
+                        marginBottom: "8px",
+                        color: navTheme.textPrimary,
+                      }}
+                    >
+                      Global College / Committee Logo (GitHub Hosted)
+                    </label>
+                    <div className="d-flex align-items-center gap-3">
+                      <input
+                        type="file"
+                        id="portal-logo-upload"
+                        accept="image/*"
+                        onChange={handleLogoUpload}
+                        disabled={isUploadingLogo}
+                        style={{ display: "none" }}
+                      />
+                      <label
+                        htmlFor="portal-logo-upload"
+                        style={{
+                          background: isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)",
+                          border: navTheme.inputBorder,
+                          color: navTheme.textPrimary,
+                          borderRadius: "12px",
+                          padding: "8px 16px",
+                          fontSize: "0.84rem",
+                          fontWeight: 600,
+                          cursor: isUploadingLogo ? "not-allowed" : "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                        }}
+                      >
+                        {isUploadingLogo ? "Uploading to GitHub..." : "📁 Upload New Logo"}
+                      </label>
+                      {logoPath && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLogoPath("");
+                            setLogoPreview("");
+                          }}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "#ef4444",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Remove Logo
+                        </button>
+                      )}
+                    </div>
+                    {logoPath && (
+                      <div
+                        style={{
+                          fontSize: "0.72rem",
+                          color: navTheme.textSecondary,
+                          marginTop: "6px",
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        Path: {logoPath}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Card 5: Custom Entry Notes */}
+                  <div
+                    style={{
+                      background: navTheme.cardBg,
+                      border: navTheme.border,
+                      borderRadius: "18px",
+                      padding: "18px 20px",
+                    }}
+                  >
+                    <label
+                      style={{
+                        display: "block",
+                        fontSize: "0.82rem",
+                        fontWeight: 600,
+                        marginBottom: "6px",
+                        color: navTheme.textPrimary,
+                      }}
+                    >
+                      Default Gate Entry Notes & Attendee Instructions
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={entryNotes}
+                      onChange={(e) => setEntryNotes(e.target.value)}
+                      style={{
+                        width: "100%",
+                        background: navTheme.inputBg,
+                        border: navTheme.inputBorder,
+                        borderRadius: "12px",
+                        padding: "9px 12px",
+                        color: navTheme.inputText,
+                        fontSize: "0.88rem",
+                        outline: "none",
+                        resize: "vertical",
+                      }}
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer (Matching Manage Staff Footer) */}
+            <div
+              style={{
+                padding: "16px 26px",
+                borderTop: navTheme.border,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "10px",
+                alignItems: "center",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setShowSettingsModal(false)}
+                style={{
+                  background: isDarkMode
+                    ? "rgba(255, 255, 255, 0.08)"
+                    : "rgba(0, 0, 0, 0.06)",
+                  border: navTheme.btnBorder,
+                  color: navTheme.textPrimary,
+                  borderRadius: "12px",
+                  padding: "8px 20px",
+                  fontWeight: 600,
+                  fontSize: "0.85rem",
+                  cursor: "pointer",
+                }}
+              >
+                Close
+              </button>
+
+              <button
+                type="button"
+                onClick={handleSaveSettings}
+                disabled={isSavingSettings}
+                style={{
+                  background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                  boxShadow: "0 4px 14px rgba(37, 99, 235, 0.3)",
+                  border: "none",
+                  color: "#ffffff",
+                  borderRadius: "12px",
+                  padding: "8px 22px",
+                  fontWeight: 600,
+                  fontSize: "0.85rem",
+                  cursor: isSavingSettings ? "not-allowed" : "pointer",
+                }}
+              >
+                {isSavingSettings ? "Saving..." : "💾 Save Settings"}
               </button>
             </div>
           </div>

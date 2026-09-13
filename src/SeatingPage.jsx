@@ -8,10 +8,15 @@ import {
   deleteDoc,
   getDoc,
   writeBatch,
+  addDoc,
+  updateDoc,
 } from "firebase/firestore";
 import { useAuth } from "./AuthContext";
 import Navbar from "./Navbar";
 import Footer from "./Footer";
+import EventBrandingModal from "./EventBrandingModal";
+import { exportToCsv } from "./utils/exportCsv";
+import { sendGatePassEmail, generateQrDataUrl } from "./utils/emailService";
 
 function SeatingPage() {
   const { eventId } = useParams();
@@ -21,6 +26,7 @@ function SeatingPage() {
   // State
   const [eventName, setEventName] = useState("Loading...");
   const [eventData, setEventData] = useState(null);
+  const [showBrandingModal, setShowBrandingModal] = useState(false);
   const [bookedSeats, setBookedSeats] = useState({});
   const [selectedSeat, setSelectedSeat] = useState(null);
   const [hoverInfo, setHoverInfo] = useState(null);
@@ -28,8 +34,53 @@ function SeatingPage() {
   // Modal Inputs (Booking)
   const [studentName, setStudentName] = useState("");
   const [studentContact, setStudentContact] = useState("");
+  const [studentEmail, setStudentEmail] = useState("");
   const [bookingStartSeat, setBookingStartSeat] = useState("");
   const [bookingEndSeat, setBookingEndSeat] = useState("");
+  const [isSubmittingBooking, setIsSubmittingBooking] = useState(false);
+
+  // Post-Booking Confirmation Modal State
+  const [confirmedPass, setConfirmedPass] = useState(null);
+  const [copiedPassLink, setCopiedPassLink] = useState(false);
+  const [systemConfig, setSystemConfig] = useState(null);
+
+  // Edit Booking Modal State
+  const [editingSeat, setEditingSeat] = useState(null);
+  const [editGuestName, setEditGuestName] = useState("");
+  const [editGuestContact, setEditGuestContact] = useState("");
+  const [editGuestEmail, setEditGuestEmail] = useState("");
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editSaveSuccess, setEditSaveSuccess] = useState(false);
+  const [isResendingPass, setIsResendingPass] = useState(false);
+  const [resendPassMsg, setResendPassMsg] = useState(null);
+
+  // Custom Cancellation Popup State
+  const [cancelingSeat, setCancelingSeat] = useState(null);
+  const [cancelReason, setCancelReason] = useState("Guest Request");
+  const [cancelNotes, setCancelNotes] = useState("");
+  const [isProcessingCancel, setIsProcessingCancel] = useState(false);
+
+  // Single Seat Unblock Modal State (Replaces native confirm for blocked seats)
+  const [unblockingSeat, setUnblockingSeat] = useState(null);
+  const [isProcessingUnblock, setIsProcessingUnblock] = useState(false);
+
+  // Dropdown menus state (Export & Admin Tools)
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showAdminMenu, setShowAdminMenu] = useState(false);
+
+  // Input Validation & Sanitization Helpers
+  const isValidEmail = (email) =>
+    /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email.trim());
+
+
+  const preventNonNumeric = (e) => {
+    if (
+      !/[0-9]/.test(e.key) &&
+      !["Backspace", "Delete", "ArrowLeft", "ArrowRight", "Tab", "Enter"].includes(e.key)
+    ) {
+      e.preventDefault();
+    }
+  };
 
   // Modal Inputs (Blocking)
   const [showBlockModal, setShowBlockModal] = useState(false);
@@ -118,17 +169,37 @@ function SeatingPage() {
     window.print();
   };
 
-  // Close modals on Escape key
+  // Close modals and dropdowns on Escape key
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === "Escape") {
         setShowBlockModal(false);
         setShowUnblockModal(false);
         setSelectedSeat(null);
+        setConfirmedPass(null);
+        setEditingSeat(null);
+        setCancelingSeat(null);
+        setUnblockingSeat(null);
+        setShowExportMenu(false);
+        setShowAdminMenu(false);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Close dropdown menus on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (!e.target.closest("[data-seating-export-menu]")) {
+        setShowExportMenu(false);
+      }
+      if (!e.target.closest("[data-seating-admin-menu]")) {
+        setShowAdminMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, []);
 
   // ----------------------------------------------------------------
@@ -192,11 +263,48 @@ function SeatingPage() {
     return seats;
   };
 
+  // Real-time Collision Detection & Range Validation for Booking Range
+  let bookingCollisions = [];
+  const startCollisionCheck = parseInt(bookingStartSeat);
+  const endCollisionCheck = bookingEndSeat ? parseInt(bookingEndSeat) : NaN;
+  const isEndSeatInvalid =
+    bookingEndSeat.trim().length > 0 &&
+    !isNaN(startCollisionCheck) &&
+    !isNaN(endCollisionCheck) &&
+    endCollisionCheck <= startCollisionCheck;
+
+  if (
+    !isNaN(startCollisionCheck) &&
+    startCollisionCheck > 0 &&
+    !isEndSeatInvalid
+  ) {
+    const endTarget = !isNaN(endCollisionCheck)
+      ? endCollisionCheck
+      : startCollisionCheck;
+    if (endTarget >= startCollisionCheck) {
+      for (let i = startCollisionCheck; i <= endTarget; i++) {
+        const rowId = findRowForSeat(i);
+        if (rowId) {
+          const uniqueId = `seat_${i}_${rowId}`;
+          const existing = bookedSeats[uniqueId];
+          if (existing) {
+            bookingCollisions.push({
+              seatNum: i,
+              label: existing.label || getSeatLabel(rowId, i),
+              status: existing.status || "booked",
+              name: existing.name || "Blocked",
+            });
+          }
+        }
+      }
+    }
+  }
+
   // ----------------------------------------------------------------
   // 2. DATA FETCHING
   // ----------------------------------------------------------------
   useEffect(() => {
-    getDoc(doc(db, "events", eventId)).then((docSnap) => {
+    const unsubEvent = onSnapshot(doc(db, "events", eventId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setEventData(data);
@@ -204,7 +312,13 @@ function SeatingPage() {
       }
     });
 
-    const unsubscribe = onSnapshot(
+    getDoc(doc(db, "system_settings", "config"))
+      .then((snap) => {
+        if (snap.exists()) setSystemConfig(snap.data());
+      })
+      .catch((err) => console.warn("Could not load system config in seating:", err));
+
+    const unsubscribeSeats = onSnapshot(
       collection(db, "events", eventId, "seats"),
       (snapshot) => {
         const seatData = {};
@@ -214,7 +328,11 @@ function SeatingPage() {
         setBookedSeats(seatData);
       },
     );
-    return () => unsubscribe();
+
+    return () => {
+      unsubEvent();
+      unsubscribeSeats();
+    };
   }, [eventId]);
 
   // Live Seat Counts
@@ -261,6 +379,22 @@ function SeatingPage() {
     }
 
     if (count > 0) {
+      const staffName =
+        userName ||
+        user?.displayName ||
+        user?.email?.split("@")[0] ||
+        "Admin";
+      const logRef = doc(collection(db, "events", eventId, "activityLogs"));
+      batch.set(logRef, {
+        type: "SEATS_BLOCKED",
+        range: `${start} - ${end}`,
+        count: count,
+        performedByName: staffName,
+        performedByEmail: user?.email || "",
+        performedByUid: user?.uid || "",
+        timestamp: new Date(),
+      });
+
       await batch.commit();
       setShowBlockModal(false);
       setBlockStart("");
@@ -297,6 +431,22 @@ function SeatingPage() {
     }
 
     if (count > 0) {
+      const staffName =
+        userName ||
+        user?.displayName ||
+        user?.email?.split("@")[0] ||
+        "Admin";
+      const logRef = doc(collection(db, "events", eventId, "activityLogs"));
+      batch.set(logRef, {
+        type: "SEATS_UNBLOCKED",
+        range: `${start} - ${end}`,
+        count: count,
+        performedByName: staffName,
+        performedByEmail: user?.email || "",
+        performedByUid: user?.uid || "",
+        timestamp: new Date(),
+      });
+
       await batch.commit();
       setShowUnblockModal(false);
       setUnblockStart("");
@@ -307,43 +457,340 @@ function SeatingPage() {
   };
 
   // -- CLICK SEAT --
-  const handleSeatClick = (seat) => {
+  const handleSeatClick = async (seat) => {
     const existing = bookedSeats[seat.uniqueId];
 
     if (existing) {
-      if (!isAdmin) {
-        alert("This seat is already reserved.");
+      if (existing.status === "blocked") {
+        if (!isAdmin) {
+          alert("This seat is VIP / Blocked.");
+          return;
+        }
+        setUnblockingSeat({ ...seat, ...existing });
         return;
       }
 
-      const action = existing.status === "blocked" ? "Unblock" : "Release";
-      const name = existing.name ? `booked by ${existing.name}` : "";
-
-      if (window.confirm(`${action} seat ${seat.label} ${name}?`)) {
-        deleteDoc(doc(db, "events", eventId, "seats", seat.uniqueId));
-      }
+      // It's a booked seat! Both Admins and Staff can view & manage it.
+      setEditingSeat({ ...seat, ...existing });
+      setEditGuestName(existing.name || "");
+      setEditGuestContact(existing.contact || "");
+      setEditGuestEmail(existing.email || "");
+      setEditSaveSuccess(false);
+      setResendPassMsg(null);
     } else {
       // Open Booking Modal (both staff users and admins can book)
       setSelectedSeat(seat);
-      setBookingStartSeat(seat.num);
+      setBookingStartSeat(String(seat.num));
       setBookingEndSeat("");
       setStudentName("");
       setStudentContact("");
+      setStudentEmail("");
     }
+  };
+
+  // -- SAVE EDIT BOOKING --
+  const handleSaveEditBooking = async (e) => {
+    e.preventDefault();
+    if (!editingSeat) return;
+
+    if (
+      !editGuestName.trim() ||
+      !editGuestContact.trim() ||
+      !editGuestEmail.trim()
+    ) {
+      alert("Please fill in all required fields (Name, Contact, and Email).");
+      return;
+    }
+
+    if (editGuestContact.trim().length !== 10) {
+      alert("Please enter a valid 10-digit phone number.");
+      return;
+    }
+
+    if (!isValidEmail(editGuestEmail)) {
+      alert(
+        "Please enter a valid email address with a domain (e.g. name@domain.com or name@college.ac.in).",
+      );
+      return;
+    }
+
+    setIsSavingEdit(true);
+    setEditSaveSuccess(false);
+
+    const staffName =
+      userName ||
+      user?.displayName ||
+      user?.email?.split("@")[0] ||
+      "Staff";
+    const staffEmail = user?.email || "";
+    const staffUid = user?.uid || "";
+
+    try {
+      await updateDoc(
+        doc(db, "events", eventId, "seats", editingSeat.uniqueId),
+        {
+          name: editGuestName.trim(),
+          contact: editGuestContact.trim(),
+          email: editGuestEmail.trim(),
+          updatedAt: new Date(),
+          updatedByName: staffName,
+          updatedByEmail: staffEmail,
+          updatedByUid: staffUid,
+        },
+      );
+
+      await addDoc(collection(db, "events", eventId, "activityLogs"), {
+        type: "SEAT_UPDATED",
+        seatId: editingSeat.uniqueId,
+        seatLabel: editingSeat.label,
+        studentName: editGuestName.trim(),
+        studentContact: editGuestContact.trim(),
+        studentEmail: editGuestEmail.trim(),
+        performedByName: staffName,
+        performedByEmail: staffEmail,
+        performedByUid: staffUid,
+        timestamp: new Date(),
+      });
+
+      setEditSaveSuccess(true);
+      setTimeout(() => setEditSaveSuccess(false), 3500);
+    } catch (err) {
+      console.error("Save edit error:", err);
+      alert("Failed to save changes: " + err.message);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  // -- RE-SEND PASS EMAIL --
+  const handleResendPassEmail = async () => {
+    if (!editingSeat || isResendingPass) return;
+
+    const emailToSend = editGuestEmail.trim() || editingSeat.email;
+    const nameToSend = editGuestName.trim() || editingSeat.name;
+    const contactToSend = editGuestContact.trim() || editingSeat.contact;
+
+    if (!isValidEmail(emailToSend)) {
+      alert("Please enter a valid email address with a domain before sending.");
+      return;
+    }
+
+    setIsResendingPass(true);
+    setResendPassMsg(null);
+
+    const passUrl = `${window.location.origin}/pass/${eventId}/${editingSeat.uniqueId}?token=${editingSeat.passToken || ""}`;
+    const qrDataUrl = await generateQrDataUrl(passUrl);
+
+    try {
+      const res = await sendGatePassEmail({
+        emailConfig: systemConfig?.email || {},
+        brandingConfig: {
+          ...(systemConfig?.branding || {}),
+          ...(eventData?.branding || {}),
+        },
+        eventName: eventData?.name || eventName,
+        eventDate: eventData?.date || "",
+        eventTime: eventData?.time || "10:00 AM",
+        venue: eventData?.venue || "GNDEC Main Auditorium, Ludhiana",
+        guestName: nameToSend,
+        guestEmail: emailToSend,
+        guestContact: contactToSend,
+        seatLabel: editingSeat.label,
+        passUrl,
+        qrDataUrl,
+      });
+
+      if (res.success) {
+        setResendPassMsg({
+          type: "success",
+          text: `✓ Pass email dispatched to ${emailToSend}!`,
+        });
+      } else {
+        setResendPassMsg({
+          type: "error",
+          text: res.error || "Failed to dispatch email.",
+        });
+      }
+    } catch (err) {
+      setResendPassMsg({ type: "error", text: err.message });
+    } finally {
+      setIsResendingPass(false);
+    }
+  };
+
+  // -- CONFIRM CANCELLATION --
+  const handleConfirmCancellation = async () => {
+    if (!cancelingSeat || isProcessingCancel) return;
+
+    setIsProcessingCancel(true);
+    const staffName =
+      userName ||
+      user?.displayName ||
+      user?.email?.split("@")[0] ||
+      "Staff";
+    const staffEmail = user?.email || "";
+    const staffUid = user?.uid || "";
+
+    try {
+      await deleteDoc(
+        doc(db, "events", eventId, "seats", cancelingSeat.uniqueId),
+      );
+
+      await addDoc(collection(db, "events", eventId, "activityLogs"), {
+        type: "SEAT_RELEASED",
+        seatId: cancelingSeat.uniqueId,
+        seatLabel: cancelingSeat.label,
+        studentName: cancelingSeat.name || null,
+        studentContact: cancelingSeat.contact || null,
+        studentEmail: cancelingSeat.email || null,
+        reason: cancelReason,
+        notes: cancelNotes.trim() || null,
+        performedByName: staffName,
+        performedByEmail: staffEmail,
+        performedByUid: staffUid,
+        timestamp: new Date(),
+      });
+
+      setCancelingSeat(null);
+      setEditingSeat(null);
+      setCancelNotes("");
+      setCancelReason("Guest Request");
+    } catch (err) {
+      console.error("Cancel booking error:", err);
+      alert("Failed to cancel booking: " + err.message);
+    } finally {
+      setIsProcessingCancel(false);
+    }
+  };
+
+  // -- CONFIRM UNBLOCK SINGLE SEAT --
+  const handleConfirmUnblock = async () => {
+    if (!unblockingSeat || isProcessingUnblock) return;
+
+    setIsProcessingUnblock(true);
+    const staffName =
+      userName ||
+      user?.displayName ||
+      user?.email?.split("@")[0] ||
+      "Admin";
+    const staffEmail = user?.email || "";
+    const staffUid = user?.uid || "";
+
+    try {
+      await deleteDoc(
+        doc(db, "events", eventId, "seats", unblockingSeat.uniqueId),
+      );
+
+      await addDoc(collection(db, "events", eventId, "activityLogs"), {
+        type: "SEAT_UNBLOCKED",
+        seatId: unblockingSeat.uniqueId,
+        seatLabel: unblockingSeat.label,
+        performedByName: staffName,
+        performedByEmail: staffEmail,
+        performedByUid: staffUid,
+        timestamp: new Date(),
+      });
+
+      setUnblockingSeat(null);
+    } catch (err) {
+      console.error("Unblock error:", err);
+      alert("Failed to unblock seat: " + err.message);
+    } finally {
+      setIsProcessingUnblock(false);
+    }
+  };
+
+  // -- EXPORT FULL SEATING PLAN TO CSV --
+  const handleExportCsv = () => {
+    const headers = [
+      { key: "seatNumber", label: "Seat #" },
+      { key: "rowLabel", label: "Row" },
+      { key: "seatLabel", label: "Seat Label" },
+      { key: "status", label: "Status" },
+      { key: "guestName", label: "Guest Name" },
+      { key: "contact", label: "Contact Number" },
+      { key: "bookedBy", label: "Booked By" },
+      { key: "checkInStatus", label: "Check-In Status" },
+    ];
+
+    const rows = [];
+    for (let i = 1; i <= 447; i++) {
+      const rowId = findRowForSeat(i);
+      if (rowId) {
+        const uniqueId = `seat_${i}_${rowId}`;
+        const seatLabel = getSeatLabel(rowId, i);
+        const booked = bookedSeats[uniqueId];
+
+        let status = "Available";
+        let guestName = "";
+        let contact = "";
+        let bookedBy = "";
+        let checkInStatus = "-";
+
+        if (booked) {
+          if (booked.status === "blocked") {
+            status = "Blocked / VIP";
+          } else {
+            status = "Booked";
+            guestName = booked.name || "";
+            contact = booked.contact || "";
+            bookedBy = booked.bookedByName || "";
+            checkInStatus = booked.hasCheckedIn ? "Checked In" : "Pending";
+          }
+        }
+
+        rows.push({
+          seatNumber: i,
+          rowLabel: `Row ${String.fromCharCode(64 + rowId)}`,
+          seatLabel,
+          status,
+          guestName,
+          contact,
+          bookedBy,
+          checkInStatus,
+        });
+      }
+    }
+
+    const safeName = eventName.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const filename = `${safeName}_Seating_Plan_Report_${new Date().toISOString().slice(0, 10)}.csv`;
+    exportToCsv(filename, headers, rows);
   };
 
   // -- BOOKING SUBMIT --
   const submitBooking = async (e) => {
     e.preventDefault();
-    if (!studentName || !studentContact || !bookingStartSeat) return;
-
-    const start = parseInt(bookingStartSeat);
-    const end = bookingEndSeat ? parseInt(bookingEndSeat) : start;
-
-    if (start > end) {
-      alert("Start seat must be smaller than or equal to end seat.");
+    if (
+      !studentName.trim() ||
+      !studentContact.trim() ||
+      !studentEmail.trim() ||
+      !bookingStartSeat
+    ) {
+      alert("Please fill in all required fields (Name, Contact, and Email).");
       return;
     }
+
+    if (studentContact.trim().length !== 10) {
+      alert("Please enter a valid 10-digit phone number.");
+      return;
+    }
+
+    if (!isValidEmail(studentEmail)) {
+      alert(
+        "Please enter a valid email address with a domain (e.g. name@domain.com or name@college.ac.in).",
+      );
+      return;
+    }
+
+    const start = parseInt(bookingStartSeat);
+    if (bookingEndSeat.trim()) {
+      const endNum = parseInt(bookingEndSeat);
+      if (isNaN(endNum) || endNum <= start) {
+        alert("End seat must be strictly greater than start seat. Leave blank to reserve a single seat.");
+        return;
+      }
+    }
+    const end = bookingEndSeat.trim() ? parseInt(bookingEndSeat) : start;
 
     // Check for collisions with already booked/blocked seats
     const alreadyTaken = [];
@@ -363,9 +810,13 @@ function SeatingPage() {
       return;
     }
 
+    setIsSubmittingBooking(true);
+
     try {
+      const passToken = crypto.randomUUID();
       const batch = writeBatch(db);
       let count = 0;
+      const bookedSeatLabels = [];
       const staffName =
         userName ||
         user?.displayName ||
@@ -373,18 +824,24 @@ function SeatingPage() {
         "Staff";
       const staffEmail = user?.email || "";
       const staffUid = user?.uid || "";
+      let primarySeatId = "";
 
       for (let i = start; i <= end; i++) {
         const rowId = findRowForSeat(i);
         if (rowId) {
           const uniqueId = `seat_${i}_${rowId}`;
+          if (!primarySeatId) primarySeatId = uniqueId;
           const seatRef = doc(db, "events", eventId, "seats", uniqueId);
           const seatLabel = getSeatLabel(rowId, i);
+          bookedSeatLabels.push(seatLabel);
 
           batch.set(seatRef, {
             label: seatLabel,
-            name: studentName,
-            contact: studentContact,
+            name: studentName.trim(),
+            contact: studentContact.trim(),
+            email: studentEmail.trim(),
+            passToken,
+            hasCheckedIn: false,
             status: "booked",
             bookedAt: new Date(),
             bookedByName: staffName,
@@ -398,8 +855,9 @@ function SeatingPage() {
             type: "SEAT_BOOKED",
             seatId: uniqueId,
             seatLabel: seatLabel,
-            studentName: studentName,
-            studentContact: studentContact,
+            studentName: studentName.trim(),
+            studentContact: studentContact.trim(),
+            studentEmail: studentEmail.trim(),
             performedByName: staffName,
             performedByEmail: staffEmail,
             performedByUid: staffUid,
@@ -411,13 +869,69 @@ function SeatingPage() {
       }
 
       if (count > 0) {
+        const passUrl = `${window.location.origin}/pass/${eventId}/${primarySeatId}?token=${passToken}`;
+        const qrDataUrl = await generateQrDataUrl(passUrl);
+
         await batch.commit();
+
+        // Dispatch EmailJS digital pass in background
+        let emailSent = false;
+        let emailError = "";
+        try {
+          const emailRes = await sendGatePassEmail({
+            emailConfig: systemConfig?.email || {},
+            brandingConfig: {
+              ...(systemConfig?.branding || {}),
+              ...(eventData?.branding || {}),
+            },
+            eventName: eventData?.name || eventName,
+            eventDate: eventData?.date || "",
+            eventTime: eventData?.time || "10:00 AM",
+            venue: eventData?.venue || "GNDEC Main Auditorium, Ludhiana",
+            guestName: studentName.trim(),
+            guestEmail: studentEmail.trim(),
+            guestContact: studentContact.trim(),
+            seatLabel: bookedSeatLabels.join(", "),
+            passUrl,
+            qrDataUrl,
+          });
+          emailSent = emailRes.success;
+          if (!emailRes.success) {
+            emailError = emailRes.error || "Email dispatch failed";
+          }
+        } catch (emailErr) {
+          emailError = emailErr.message || "Email error";
+        }
+
+        // Open Confirmation & Digital Pass Modal
+        setConfirmedPass({
+          guestName: studentName.trim(),
+          guestEmail: studentEmail.trim(),
+          guestContact: studentContact.trim(),
+          seatLabels: bookedSeatLabels.join(", "),
+          passUrl,
+          qrDataUrl,
+          emailSent,
+          emailError,
+          eventName: eventData?.name || eventName,
+          eventDate: eventData?.date || "",
+          eventTime: eventData?.time || "10:00 AM",
+        });
+
         setSelectedSeat(null);
+        setStudentName("");
+        setStudentContact("");
+        setStudentEmail("");
+        setBookingStartSeat("");
+        setBookingEndSeat("");
       } else {
         alert("Invalid seat range.");
       }
     } catch (err) {
-      alert(err.message);
+      console.error("Booking error:", err);
+      alert("Booking error: " + err.message);
+    } finally {
+      setIsSubmittingBooking(false);
     }
   };
 
@@ -446,7 +960,7 @@ function SeatingPage() {
       <div
         className="w-100 sticky-top d-print-none"
         style={{
-          zIndex: 1020,
+          zIndex: 1010,
           background: theme.headerBg,
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
@@ -524,20 +1038,20 @@ function SeatingPage() {
 
             {/* Right: Actions & Tools */}
             <div className="d-flex align-items-center flex-wrap gap-2">
-              {/* Shortcut to Gate Check-In */}
+              {/* Primary Action: Shortcut to Gate Check-In */}
               <button
                 type="button"
                 onClick={() => navigate(`/checkin/${eventId}`)}
                 style={{
                   background: isDarkMode
-                    ? "rgba(59, 130, 246, 0.15)"
-                    : "rgba(219, 234, 254, 0.8)",
+                    ? "rgba(59, 130, 246, 0.18)"
+                    : "rgba(219, 234, 254, 0.85)",
                   border: isDarkMode
-                    ? "1px solid rgba(59, 130, 246, 0.35)"
-                    : "1px solid rgba(147, 197, 253, 0.9)",
+                    ? "1px solid rgba(59, 130, 246, 0.45)"
+                    : "1px solid rgba(147, 197, 253, 0.95)",
                   color: isDarkMode ? "#93c5fd" : "#1d4ed8",
                   borderRadius: "12px",
-                  padding: "7px 14px",
+                  padding: "7px 15px",
                   fontSize: "0.82rem",
                   fontWeight: 600,
                   cursor: "pointer",
@@ -550,38 +1064,142 @@ function SeatingPage() {
                 🎟️ Gate Check-In
               </button>
 
-              {/* Export Map Button */}
-              <button
-                type="button"
-                onClick={handlePrintExport}
-                style={{
-                  background: isDarkMode
-                    ? "rgba(16, 185, 129, 0.15)"
-                    : "rgba(220, 252, 231, 0.85)",
-                  border: isDarkMode
-                    ? "1px solid rgba(16, 185, 129, 0.35)"
-                    : "1px solid rgba(134, 239, 172, 0.9)",
-                  color: isDarkMode ? "#6ee7b7" : "#15803d",
-                  borderRadius: "12px",
-                  padding: "7px 14px",
-                  fontSize: "0.82rem",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  transition: "all 0.2s ease",
-                }}
-              >
-                📸 Export / Print Map
-              </button>
+              {/* Smart Dropdown: Export Options */}
+              <div className="position-relative" data-seating-export-menu="true">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowExportMenu((prev) => !prev);
+                    setShowAdminMenu(false);
+                  }}
+                  style={{
+                    background: isDarkMode
+                      ? "rgba(16, 185, 129, 0.15)"
+                      : "rgba(220, 252, 231, 0.85)",
+                    border: isDarkMode
+                      ? "1px solid rgba(16, 185, 129, 0.35)"
+                      : "1px solid rgba(134, 239, 172, 0.9)",
+                    color: isDarkMode ? "#6ee7b7" : "#15803d",
+                    borderRadius: "12px",
+                    padding: "7px 14px",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    transition: "all 0.2s ease",
+                  }}
+                >
+                  <span>📥 Export</span>
+                  <span style={{ fontSize: "0.7rem", opacity: 0.8 }}>▾</span>
+                </button>
 
-              {/* Admin Block & Unblock Range Buttons */}
+                {showExportMenu && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "calc(100% + 6px)",
+                      right: 0,
+                      zIndex: 100,
+                      minWidth: "190px",
+                      background: isDarkMode ? "#1e293b" : "#ffffff",
+                      border: isDarkMode
+                        ? "1px solid rgba(255, 255, 255, 0.14)"
+                        : "1px solid rgba(0, 0, 0, 0.1)",
+                      borderRadius: "14px",
+                      boxShadow: isDarkMode
+                        ? "0 12px 30px rgba(0, 0, 0, 0.55)"
+                        : "0 12px 30px rgba(0, 0, 0, 0.12)",
+                      padding: "6px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "2px",
+                      animation: "fadeIn 0.15s ease",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportMenu(false);
+                        handlePrintExport();
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        width: "100%",
+                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        background: "transparent",
+                        border: "none",
+                        color: theme.textPrimary,
+                        fontSize: "0.82rem",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "background 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = isDarkMode
+                          ? "rgba(255, 255, 255, 0.08)"
+                          : "rgba(0, 0, 0, 0.05)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <span>📸</span>
+                      <span>Print Map</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowExportMenu(false);
+                        handleExportCsv();
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        width: "100%",
+                        padding: "8px 10px",
+                        borderRadius: "8px",
+                        background: "transparent",
+                        border: "none",
+                        color: theme.textPrimary,
+                        fontSize: "0.82rem",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                        textAlign: "left",
+                        transition: "background 0.15s ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = isDarkMode
+                          ? "rgba(255, 255, 255, 0.08)"
+                          : "rgba(0, 0, 0, 0.05)";
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <span>📊</span>
+                      <span>Export CSV</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Smart Dropdown: Admin Tools */}
               {isAdmin && (
-                <>
+                <div className="position-relative" data-seating-admin-menu="true">
                   <button
                     type="button"
-                    onClick={() => setShowBlockModal(true)}
+                    onClick={() => {
+                      setShowAdminMenu((prev) => !prev);
+                      setShowExportMenu(false);
+                    }}
                     style={{
                       background: isDarkMode
                         ? "rgba(15, 23, 42, 0.8)"
@@ -593,34 +1211,211 @@ function SeatingPage() {
                       fontSize: "0.82rem",
                       fontWeight: 600,
                       cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
                       transition: "all 0.2s ease",
                     }}
                   >
-                    🚫 Block Range
+                    <span>⚙️ Admin Tools</span>
+                    <span style={{ fontSize: "0.7rem", opacity: 0.8 }}>▾</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setShowUnblockModal(true)}
-                    style={{
-                      background: isDarkMode
-                        ? "rgba(239, 68, 68, 0.15)"
-                        : "rgba(254, 226, 226, 0.85)",
-                      border: isDarkMode
-                        ? "1px solid rgba(239, 68, 68, 0.35)"
-                        : "1px solid rgba(252, 165, 165, 0.9)",
-                      color: isDarkMode ? "#fca5a5" : "#b91c1c",
-                      borderRadius: "12px",
-                      padding: "7px 14px",
-                      fontSize: "0.82rem",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      transition: "all 0.2s ease",
-                    }}
-                  >
-                    🔓 Unblock Range
-                  </button>
-                </>
+                  {showAdminMenu && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "calc(100% + 6px)",
+                        right: 0,
+                        zIndex: 100,
+                        minWidth: "210px",
+                        background: isDarkMode ? "#1e293b" : "#ffffff",
+                        border: isDarkMode
+                          ? "1px solid rgba(255, 255, 255, 0.14)"
+                          : "1px solid rgba(0, 0, 0, 0.1)",
+                        borderRadius: "14px",
+                        boxShadow: isDarkMode
+                          ? "0 12px 30px rgba(0, 0, 0, 0.55)"
+                          : "0 12px 30px rgba(0, 0, 0, 0.12)",
+                        padding: "6px",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "2px",
+                        animation: "fadeIn 0.15s ease",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "0.68rem",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: theme.textSecondary,
+                          padding: "6px 10px 3px",
+                        }}
+                      >
+                        Seat Range Controls
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAdminMenu(false);
+                          setShowBlockModal(true);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          width: "100%",
+                          padding: "8px 10px",
+                          borderRadius: "8px",
+                          background: "transparent",
+                          border: "none",
+                          color: theme.textPrimary,
+                          fontSize: "0.82rem",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          transition: "background 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <span>🚫</span>
+                        <span>Block Range</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAdminMenu(false);
+                          setShowUnblockModal(true);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          width: "100%",
+                          padding: "8px 10px",
+                          borderRadius: "8px",
+                          background: "transparent",
+                          border: "none",
+                          color: theme.textPrimary,
+                          fontSize: "0.82rem",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          transition: "background 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <span>🔓</span>
+                        <span>Unblock Range</span>
+                      </button>
+
+                      <div
+                        style={{
+                          fontSize: "0.68rem",
+                          fontWeight: 700,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          color: theme.textSecondary,
+                          padding: "8px 10px 3px",
+                          borderTop: isDarkMode
+                            ? "1px solid rgba(255, 255, 255, 0.08)"
+                            : "1px solid rgba(0, 0, 0, 0.06)",
+                          marginTop: "2px",
+                        }}
+                      >
+                        Event Management
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAdminMenu(false);
+                          navigate(`/logs/${eventId}`);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          width: "100%",
+                          padding: "8px 10px",
+                          borderRadius: "8px",
+                          background: "transparent",
+                          border: "none",
+                          color: theme.textPrimary,
+                          fontSize: "0.82rem",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          transition: "background 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <span>📜</span>
+                        <span>Activity Logs</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAdminMenu(false);
+                          setShowBrandingModal(true);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                          width: "100%",
+                          padding: "8px 10px",
+                          borderRadius: "8px",
+                          background: "transparent",
+                          border: "none",
+                          color: theme.textPrimary,
+                          fontSize: "0.82rem",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                          textAlign: "left",
+                          transition: "background 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = "transparent";
+                        }}
+                      >
+                        <span>🎨</span>
+                        <span>Pass Branding</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -1067,7 +1862,9 @@ function SeatingPage() {
               boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
               maxWidth: "480px",
               width: "100%",
-              overflow: "hidden",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
               position: "relative",
               color: theme.textPrimary,
               animation: "seatingModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
@@ -1128,13 +1925,17 @@ function SeatingPage() {
                         color: theme.textPrimary,
                       }}
                     >
-                      Start Seat #
+                      Start Seat # <span style={{ color: "#ef4444" }}>*</span>
                     </label>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       required
                       value={bookingStartSeat}
-                      onChange={(e) => setBookingStartSeat(e.target.value)}
+                      onKeyDown={preventNonNumeric}
+                      onChange={(e) =>
+                        setBookingStartSeat(e.target.value.replace(/\D/g, ""))
+                      }
                       style={{
                         width: "100%",
                         background: theme.inputBg,
@@ -1158,17 +1959,26 @@ function SeatingPage() {
                         color: theme.textPrimary,
                       }}
                     >
-                      End Seat # <span style={{ color: theme.textSecondary, fontWeight: 400 }}>(Optional)</span>
+                      End Seat #{" "}
+                      <span style={{ color: theme.textSecondary, fontWeight: 400 }}>
+                        (Optional)
+                      </span>
                     </label>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       placeholder="Single seat"
                       value={bookingEndSeat}
-                      onChange={(e) => setBookingEndSeat(e.target.value)}
+                      onKeyDown={preventNonNumeric}
+                      onChange={(e) =>
+                        setBookingEndSeat(e.target.value.replace(/\D/g, ""))
+                      }
                       style={{
                         width: "100%",
                         background: theme.inputBg,
-                        border: theme.inputBorder,
+                        border: isEndSeatInvalid
+                          ? "1px solid #ef4444"
+                          : theme.inputBorder,
                         borderRadius: "12px",
                         padding: "9px 12px",
                         color: theme.inputText,
@@ -1176,8 +1986,44 @@ function SeatingPage() {
                         outline: "none",
                       }}
                     />
+                    {isEndSeatInvalid && (
+                      <div
+                        style={{
+                          fontSize: "0.74rem",
+                          color: "#ef4444",
+                          marginTop: "4px",
+                          lineHeight: 1.3,
+                        }}
+                      >
+                        End seat must be strictly greater than start seat (e.g. #{startCollisionCheck + 1} or higher). Leave blank for a single seat.
+                      </div>
+                    )}
                   </div>
                 </div>
+
+                {/* Live Range Collision Alert */}
+                {bookingCollisions.length > 0 && (
+                  <div
+                    style={{
+                      background: isDarkMode
+                        ? "rgba(239, 68, 68, 0.15)"
+                        : "rgba(254, 226, 226, 0.9)",
+                      border: isDarkMode
+                        ? "1px solid rgba(239, 68, 68, 0.35)"
+                        : "1px solid rgba(252, 165, 165, 0.9)",
+                      color: isDarkMode ? "#fca5a5" : "#b91c1c",
+                      borderRadius: "12px",
+                      padding: "10px 14px",
+                      fontSize: "0.82rem",
+                      marginBottom: "14px",
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    ⚠️ <strong>Collision Alert:</strong> Seat(s){" "}
+                    <strong>{bookingCollisions.map((c) => c.label).join(", ")}</strong> in this
+                    range {bookingCollisions.length === 1 ? "is" : "are"} already booked or blocked! Please choose available seats.
+                  </div>
+                )}
 
                 <div
                   style={{
@@ -1205,7 +2051,7 @@ function SeatingPage() {
                       color: theme.textPrimary,
                     }}
                   >
-                    Guest / Student Full Name
+                    Guest / Student Full Name <span style={{ color: "#ef4444" }}>*</span>
                   </label>
                   <input
                     type="text"
@@ -1228,6 +2074,56 @@ function SeatingPage() {
                 </div>
 
                 {/* Contact Number */}
+                <div className="mb-3">
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.82rem",
+                      fontWeight: 600,
+                      marginBottom: "6px",
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    Phone / Contact Number (10 digits) <span style={{ color: "#ef4444" }}>*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    required
+                    placeholder="e.g. 9876543210"
+                    value={studentContact}
+                    onKeyDown={preventNonNumeric}
+                    onChange={(e) =>
+                      setStudentContact(e.target.value.replace(/\D/g, "").slice(0, 10))
+                    }
+                    style={{
+                      width: "100%",
+                      background: theme.inputBg,
+                      border:
+                        studentContact.length > 0 && studentContact.length < 10
+                          ? "1px solid #ef4444"
+                          : theme.inputBorder,
+                      borderRadius: "12px",
+                      padding: "10px 14px",
+                      color: theme.inputText,
+                      fontSize: "0.92rem",
+                      outline: "none",
+                    }}
+                  />
+                  {studentContact.length > 0 && studentContact.length < 10 && (
+                    <div
+                      style={{
+                        fontSize: "0.74rem",
+                        color: "#ef4444",
+                        marginTop: "4px",
+                      }}
+                    >
+                      Must be strictly 10 digits (currently {studentContact.length})
+                    </div>
+                  )}
+                </div>
+
+                {/* Email Address */}
                 <div className="mb-4">
                   <label
                     style={{
@@ -1238,18 +2134,21 @@ function SeatingPage() {
                       color: theme.textPrimary,
                     }}
                   >
-                    Phone / Contact Number
+                    Guest / Student Email Address <span style={{ color: "#ef4444" }}>*</span>
                   </label>
                   <input
-                    type="text"
+                    type="email"
                     required
-                    placeholder="e.g. 9876543210"
-                    value={studentContact}
-                    onChange={(e) => setStudentContact(e.target.value)}
+                    placeholder="e.g. jaspreet@example.com"
+                    value={studentEmail}
+                    onChange={(e) => setStudentEmail(e.target.value)}
                     style={{
                       width: "100%",
                       background: theme.inputBg,
-                      border: theme.inputBorder,
+                      border:
+                        studentEmail.length > 0 && !isValidEmail(studentEmail)
+                          ? "1px solid #ef4444"
+                          : theme.inputBorder,
                       borderRadius: "12px",
                       padding: "10px 14px",
                       color: theme.inputText,
@@ -1257,6 +2156,27 @@ function SeatingPage() {
                       outline: "none",
                     }}
                   />
+                  {studentEmail.length > 0 && !isValidEmail(studentEmail) ? (
+                    <div
+                      style={{
+                        fontSize: "0.74rem",
+                        color: "#ef4444",
+                        marginTop: "4px",
+                      }}
+                    >
+                      Please enter a valid email ending with a domain (e.g. name@xyz.in or name@example.com).
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        fontSize: "0.74rem",
+                        color: theme.textSecondary,
+                        marginTop: "4px",
+                      }}
+                    >
+                      Digital entry pass & QR code will be dispatched to this email.
+                    </div>
+                  )}
                 </div>
 
                 {/* Submit & Cancel */}
@@ -1279,24 +2199,371 @@ function SeatingPage() {
                   >
                     Cancel
                   </button>
-                  <button
-                    type="submit"
-                    style={{
-                      flex: 2,
-                      background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
-                      border: "none",
-                      color: "#ffffff",
-                      borderRadius: "12px",
-                      padding: "10px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      boxShadow: "0 4px 15px rgba(37, 99, 235, 0.35)",
-                    }}
-                  >
-                    {bookingEndSeat ? "Confirm Multi-Booking" : "Confirm Booking"}
-                  </button>
+
+                  {(() => {
+                    const isFormValid =
+                      studentName.trim().length > 0 &&
+                      studentContact.trim().length === 10 &&
+                      isValidEmail(studentEmail) &&
+                      bookingStartSeat.trim().length > 0 &&
+                      !isEndSeatInvalid &&
+                      bookingCollisions.length === 0;
+
+                    return (
+                      <button
+                        type="submit"
+                        disabled={!isFormValid || isSubmittingBooking}
+                        style={{
+                          flex: 2,
+                          background: !isFormValid
+                            ? isDarkMode
+                              ? "rgba(255, 255, 255, 0.08)"
+                              : "rgba(0, 0, 0, 0.12)"
+                            : "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                          border: "none",
+                          color: !isFormValid ? theme.textSecondary : "#ffffff",
+                          borderRadius: "12px",
+                          padding: "10px",
+                          fontWeight: 600,
+                          cursor:
+                            !isFormValid || isSubmittingBooking
+                              ? "not-allowed"
+                              : "pointer",
+                          boxShadow: !isFormValid
+                            ? "none"
+                            : "0 4px 15px rgba(37, 99, 235, 0.35)",
+                          transition: "all 0.2s ease",
+                        }}
+                      >
+                        {isSubmittingBooking
+                          ? "Booking & Dispatching..."
+                          : bookingEndSeat
+                            ? "Confirm Multi-Booking"
+                            : "Confirm Booking"}
+                      </button>
+                    );
+                  })()}
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POST-BOOKING PASS CONFIRMATION MODAL */}
+      {confirmedPass && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.78)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setConfirmedPass(null);
+          }}
+        >
+          <div
+            style={{
+              background: theme.modalCardBg,
+              border: theme.modalBorder,
+              borderRadius: "26px",
+              boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
+              maxWidth: "480px",
+              width: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              position: "relative",
+              color: theme.textPrimary,
+              animation: "seatingModalPop 0.22s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "20px 24px",
+                borderBottom: theme.canvasBorder,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                background: isDarkMode
+                  ? "rgba(16, 185, 129, 0.12)"
+                  : "rgba(209, 250, 229, 0.8)",
+              }}
+            >
+              <div className="d-flex align-items-center gap-2">
+                <span style={{ fontSize: "1.3rem" }}>🎉</span>
+                <div>
+                  <h5
+                    style={{
+                      margin: 0,
+                      fontWeight: 700,
+                      fontSize: "1.05rem",
+                      color: isDarkMode ? "#34d399" : "#065f46",
+                    }}
+                  >
+                    Booking Confirmed!
+                  </h5>
+                  <div
+                    style={{
+                      fontSize: "0.78rem",
+                      color: isDarkMode ? "#a7f3d0" : "#047857",
+                    }}
+                  >
+                    Digital Gate Pass has been generated
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmedPass(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.textSecondary,
+                  fontSize: "1.2rem",
+                  cursor: "pointer",
+                  padding: "4px",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: "24px" }}>
+              {/* Email Status Alert */}
+              <div
+                style={{
+                  background: confirmedPass.emailSent
+                    ? "rgba(16, 185, 129, 0.12)"
+                    : "rgba(245, 158, 11, 0.15)",
+                  border: confirmedPass.emailSent
+                    ? "1px solid rgba(16, 185, 129, 0.3)"
+                    : "1px solid rgba(245, 158, 11, 0.35)",
+                  color: confirmedPass.emailSent ? "#10b981" : "#d97706",
+                  borderRadius: "14px",
+                  padding: "10px 14px",
+                  fontSize: "0.82rem",
+                  fontWeight: 600,
+                  marginBottom: "16px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span>{confirmedPass.emailSent ? "✉️" : "⚠️"}</span>
+                <span>
+                  {confirmedPass.emailSent
+                    ? `Pass successfully emailed to ${confirmedPass.guestEmail}!`
+                    : `Email not sent automatically (${confirmedPass.emailError || "Check EmailJS setup"}). Share or copy pass below:`}
+                </span>
+              </div>
+
+              {/* Pass Card Preview */}
+              <div
+                style={{
+                  background: isDarkMode ? "rgba(0, 0, 0, 0.3)" : "rgba(241, 245, 249, 0.85)",
+                  border: theme.inputBorder,
+                  borderRadius: "20px",
+                  padding: "16px",
+                  textAlign: "center",
+                  marginBottom: "18px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "0.72rem",
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "1px",
+                    color: theme.textSecondary,
+                    marginBottom: "4px",
+                  }}
+                >
+                  {confirmedPass.eventName}
+                </div>
+
+                <div
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                    color: "#ffffff",
+                    padding: "6px 16px",
+                    borderRadius: "14px",
+                    fontSize: "1.1rem",
+                    fontWeight: 800,
+                    marginBottom: "12px",
+                    boxShadow: "0 4px 12px rgba(37, 99, 235, 0.3)",
+                  }}
+                >
+                  <span>💺</span>
+                  <span>{confirmedPass.seatLabels}</span>
+                </div>
+
+                <div style={{ fontSize: "0.95rem", fontWeight: 700 }}>
+                  {confirmedPass.guestName}
+                </div>
+                <div style={{ fontSize: "0.8rem", color: theme.textSecondary }}>
+                  📞 {confirmedPass.guestContact} • ✉️ {confirmedPass.guestEmail}
+                </div>
+
+                {/* QR Code */}
+                {confirmedPass.qrDataUrl && (
+                  <div
+                    style={{
+                      marginTop: "14px",
+                      display: "inline-block",
+                      background: "#ffffff",
+                      padding: "8px",
+                      borderRadius: "14px",
+                      boxShadow: "0 6px 16px rgba(0,0,0,0.1)",
+                    }}
+                  >
+                    <img
+                      src={confirmedPass.qrDataUrl}
+                      alt="Pass QR"
+                      style={{ width: "130px", height: "130px", display: "block" }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons Grid */}
+              <div className="d-flex flex-column gap-2">
+                <div className="d-flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(confirmedPass.passUrl);
+                      setCopiedPassLink(true);
+                      setTimeout(() => setCopiedPassLink(false), 2500);
+                    }}
+                    style={{
+                      flex: 1,
+                      background: isDarkMode
+                        ? "rgba(37, 99, 235, 0.25)"
+                        : "rgba(219, 234, 254, 0.9)",
+                      border: "1px solid rgba(59, 130, 246, 0.5)",
+                      color: isDarkMode ? "#93c5fd" : "#1d4ed8",
+                      borderRadius: "12px",
+                      padding: "9px 12px",
+                      fontWeight: 600,
+                      fontSize: "0.84rem",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {copiedPassLink ? "✓ Link Copied!" : "📋 Copy Pass Link"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => window.open(confirmedPass.passUrl, "_blank")}
+                    style={{
+                      flex: 1,
+                      background: isDarkMode
+                        ? "rgba(255, 255, 255, 0.08)"
+                        : "rgba(0, 0, 0, 0.05)",
+                      border: theme.inputBorder,
+                      color: theme.textPrimary,
+                      borderRadius: "12px",
+                      padding: "9px 12px",
+                      fontWeight: 600,
+                      fontSize: "0.84rem",
+                      cursor: "pointer",
+                    }}
+                  >
+                    🎟️ View Pass
+                  </button>
+                </div>
+
+                <div className="d-flex gap-2">
+                  {navigator.share && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.share({
+                          title: `${confirmedPass.eventName} Gate Pass`,
+                          text: `Gate Pass for ${confirmedPass.guestName} (${confirmedPass.seatLabels})`,
+                          url: confirmedPass.passUrl,
+                        });
+                      }}
+                      style={{
+                        flex: 1,
+                        background: isDarkMode
+                          ? "rgba(255, 255, 255, 0.08)"
+                          : "rgba(0, 0, 0, 0.05)",
+                        border: theme.inputBorder,
+                        color: theme.textPrimary,
+                        borderRadius: "12px",
+                        padding: "9px 12px",
+                        fontWeight: 600,
+                        fontSize: "0.84rem",
+                        cursor: "pointer",
+                      }}
+                    >
+                      📱 Share Pass
+                    </button>
+                  )}
+
+                  <a
+                    href={`mailto:${confirmedPass.guestEmail}?subject=${encodeURIComponent(
+                      `🎟️ Gate Pass: ${confirmedPass.eventName} (${confirmedPass.seatLabels})`,
+                    )}&body=${encodeURIComponent(
+                      `Dear ${confirmedPass.guestName},\n\nYour auditorium seat reservation has been confirmed!\nEvent: ${confirmedPass.eventName}\nSeat: ${confirmedPass.seatLabels}\n\nView and present your live QR gate pass here:\n${confirmedPass.passUrl}\n\nPlease report 15 minutes before showtime.\n\nCultural Committee GNDEC`,
+                    )}`}
+                    style={{
+                      flex: 1,
+                      textAlign: "center",
+                      textDecoration: "none",
+                      background: isDarkMode
+                        ? "rgba(255, 255, 255, 0.08)"
+                        : "rgba(0, 0, 0, 0.05)",
+                      border: theme.inputBorder,
+                      color: theme.textPrimary,
+                      borderRadius: "12px",
+                      padding: "9px 12px",
+                      fontWeight: 600,
+                      fontSize: "0.84rem",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    ✉️ Open in Email
+                  </a>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setConfirmedPass(null)}
+                  style={{
+                    marginTop: "8px",
+                    background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                    border: "none",
+                    color: "#ffffff",
+                    borderRadius: "12px",
+                    padding: "10px",
+                    fontWeight: 600,
+                    fontSize: "0.88rem",
+                    cursor: "pointer",
+                    boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
+                  }}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1329,7 +2596,9 @@ function SeatingPage() {
               boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
               maxWidth: "460px",
               width: "100%",
-              overflow: "hidden",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
               position: "relative",
               color: theme.textPrimary,
               animation: "seatingModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
@@ -1374,110 +2643,144 @@ function SeatingPage() {
                 Blocked seats are marked as unavailable for general booking (ideal for VIPs, sound team, or faculty).
               </p>
 
-              <form onSubmit={handleBlockSubmit}>
-                <div className="row g-2 mb-4">
-                  <div className="col-6">
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "0.82rem",
-                        fontWeight: 600,
-                        marginBottom: "4px",
-                        color: theme.textPrimary,
-                      }}
-                    >
-                      Start Seat #
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      placeholder="e.g. 1"
-                      value={blockStart}
-                      onChange={(e) => setBlockStart(e.target.value)}
-                      style={{
-                        width: "100%",
-                        background: theme.inputBg,
-                        border: theme.inputBorder,
-                        borderRadius: "12px",
-                        padding: "9px 12px",
-                        color: theme.inputText,
-                        fontSize: "0.9rem",
-                        outline: "none",
-                      }}
-                    />
-                  </div>
+              {(() => {
+                const isBlockRangeInvalid =
+                  blockStart.trim().length > 0 &&
+                  blockEnd.trim().length > 0 &&
+                  parseInt(blockEnd) < parseInt(blockStart);
 
-                  <div className="col-6">
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "0.82rem",
-                        fontWeight: 600,
-                        marginBottom: "4px",
-                        color: theme.textPrimary,
-                      }}
-                    >
-                      End Seat #
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      placeholder="e.g. 16"
-                      value={blockEnd}
-                      onChange={(e) => setBlockEnd(e.target.value)}
-                      style={{
-                        width: "100%",
-                        background: theme.inputBg,
-                        border: theme.inputBorder,
-                        borderRadius: "12px",
-                        padding: "9px 12px",
-                        color: theme.inputText,
-                        fontSize: "0.9rem",
-                        outline: "none",
-                      }}
-                    />
-                  </div>
-                </div>
+                return (
+                  <form onSubmit={handleBlockSubmit}>
+                    <div className="row g-2 mb-4">
+                      <div className="col-6">
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            marginBottom: "4px",
+                            color: theme.textPrimary,
+                          }}
+                        >
+                          Start Seat # <span style={{ color: "#ef4444" }}>*</span>
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          placeholder="e.g. 1"
+                          value={blockStart}
+                          onKeyDown={preventNonNumeric}
+                          onChange={(e) => setBlockStart(e.target.value.replace(/\D/g, ""))}
+                          style={{
+                            width: "100%",
+                            background: theme.inputBg,
+                            border: theme.inputBorder,
+                            borderRadius: "12px",
+                            padding: "9px 12px",
+                            color: theme.inputText,
+                            fontSize: "0.9rem",
+                            outline: "none",
+                          }}
+                        />
+                      </div>
 
-                <div className="d-flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowBlockModal(false)}
-                    style={{
-                      flex: 1,
-                      background: isDarkMode
-                        ? "rgba(255, 255, 255, 0.08)"
-                        : "rgba(0, 0, 0, 0.05)",
-                      border: theme.inputBorder,
-                      color: theme.textPrimary,
-                      borderRadius: "12px",
-                      padding: "10px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    style={{
-                      flex: 2,
-                      background: isDarkMode
-                        ? "linear-gradient(135deg, #374151 0%, #1f2937 100%)"
-                        : "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-                      border: "none",
-                      color: "#ffffff",
-                      borderRadius: "12px",
-                      padding: "10px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      boxShadow: "0 4px 15px rgba(0, 0, 0, 0.3)",
-                    }}
-                  >
-                    Block Range
-                  </button>
-                </div>
-              </form>
+                      <div className="col-6">
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            marginBottom: "4px",
+                            color: theme.textPrimary,
+                          }}
+                        >
+                          End Seat # <span style={{ color: "#ef4444" }}>*</span>
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          placeholder="e.g. 16"
+                          value={blockEnd}
+                          onKeyDown={preventNonNumeric}
+                          onChange={(e) => setBlockEnd(e.target.value.replace(/\D/g, ""))}
+                          style={{
+                            width: "100%",
+                            background: theme.inputBg,
+                            border: isBlockRangeInvalid
+                              ? "1px solid #ef4444"
+                              : theme.inputBorder,
+                            borderRadius: "12px",
+                            padding: "9px 12px",
+                            color: theme.inputText,
+                            fontSize: "0.9rem",
+                            outline: "none",
+                          }}
+                        />
+                        {isBlockRangeInvalid && (
+                          <div
+                            style={{
+                              fontSize: "0.74rem",
+                              color: "#ef4444",
+                              marginTop: "4px",
+                              lineHeight: 1.3,
+                            }}
+                          >
+                            End seat must be greater than or equal to start seat.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="d-flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowBlockModal(false)}
+                        style={{
+                          flex: 1,
+                          background: isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)",
+                          border: theme.inputBorder,
+                          color: theme.textPrimary,
+                          borderRadius: "12px",
+                          padding: "10px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isBlockRangeInvalid}
+                        style={{
+                          flex: 2,
+                          background: isBlockRangeInvalid
+                            ? isDarkMode
+                              ? "rgba(255, 255, 255, 0.08)"
+                              : "rgba(0, 0, 0, 0.12)"
+                            : isDarkMode
+                              ? "linear-gradient(135deg, #374151 0%, #1f2937 100%)"
+                              : "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
+                          border: "none",
+                          color: isBlockRangeInvalid ? theme.textSecondary : "#ffffff",
+                          borderRadius: "12px",
+                          padding: "10px",
+                          fontWeight: 600,
+                          cursor: isBlockRangeInvalid ? "not-allowed" : "pointer",
+                          boxShadow: isBlockRangeInvalid
+                            ? "none"
+                            : "0 4px 15px rgba(0, 0, 0, 0.3)",
+                        }}
+                      >
+                        Block Range
+                      </button>
+                    </div>
+                  </form>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -1510,7 +2813,9 @@ function SeatingPage() {
               boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
               maxWidth: "460px",
               width: "100%",
-              overflow: "hidden",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
               position: "relative",
               color: theme.textPrimary,
               animation: "seatingModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
@@ -1570,108 +2875,935 @@ function SeatingPage() {
                 ⚠️ <strong>Warning:</strong> Releasing this range will delete any active bookings or blocks within these seat numbers, restoring them to available.
               </div>
 
-              <form onSubmit={handleUnblockSubmit}>
-                <div className="row g-2 mb-4">
-                  <div className="col-6">
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "0.82rem",
-                        fontWeight: 600,
-                        marginBottom: "4px",
-                        color: theme.textPrimary,
-                      }}
-                    >
-                      Start Seat #
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      placeholder="e.g. 1"
-                      value={unblockStart}
-                      onChange={(e) => setUnblockStart(e.target.value)}
-                      style={{
-                        width: "100%",
-                        background: theme.inputBg,
-                        border: theme.inputBorder,
-                        borderRadius: "12px",
-                        padding: "9px 12px",
-                        color: theme.inputText,
-                        fontSize: "0.9rem",
-                        outline: "none",
-                      }}
-                    />
-                  </div>
+              {(() => {
+                const isUnblockRangeInvalid =
+                  unblockStart.trim().length > 0 &&
+                  unblockEnd.trim().length > 0 &&
+                  parseInt(unblockEnd) < parseInt(unblockStart);
 
-                  <div className="col-6">
-                    <label
-                      style={{
-                        display: "block",
-                        fontSize: "0.82rem",
-                        fontWeight: 600,
-                        marginBottom: "4px",
-                        color: theme.textPrimary,
-                      }}
-                    >
-                      End Seat #
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      placeholder="e.g. 16"
-                      value={unblockEnd}
-                      onChange={(e) => setUnblockEnd(e.target.value)}
-                      style={{
-                        width: "100%",
-                        background: theme.inputBg,
-                        border: theme.inputBorder,
-                        borderRadius: "12px",
-                        padding: "9px 12px",
-                        color: theme.inputText,
-                        fontSize: "0.9rem",
-                        outline: "none",
-                      }}
-                    />
+                return (
+                  <form onSubmit={handleUnblockSubmit}>
+                    <div className="row g-2 mb-4">
+                      <div className="col-6">
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            marginBottom: "4px",
+                            color: theme.textPrimary,
+                          }}
+                        >
+                          Start Seat # <span style={{ color: "#ef4444" }}>*</span>
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          placeholder="e.g. 1"
+                          value={unblockStart}
+                          onKeyDown={preventNonNumeric}
+                          onChange={(e) => setUnblockStart(e.target.value.replace(/\D/g, ""))}
+                          style={{
+                            width: "100%",
+                            background: theme.inputBg,
+                            border: theme.inputBorder,
+                            borderRadius: "12px",
+                            padding: "9px 12px",
+                            color: theme.inputText,
+                            fontSize: "0.9rem",
+                            outline: "none",
+                          }}
+                        />
+                      </div>
+
+                      <div className="col-6">
+                        <label
+                          style={{
+                            display: "block",
+                            fontSize: "0.82rem",
+                            fontWeight: 600,
+                            marginBottom: "4px",
+                            color: theme.textPrimary,
+                          }}
+                        >
+                          End Seat # <span style={{ color: "#ef4444" }}>*</span>
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          required
+                          placeholder="e.g. 16"
+                          value={unblockEnd}
+                          onKeyDown={preventNonNumeric}
+                          onChange={(e) => setUnblockEnd(e.target.value.replace(/\D/g, ""))}
+                          style={{
+                            width: "100%",
+                            background: theme.inputBg,
+                            border: isUnblockRangeInvalid
+                              ? "1px solid #ef4444"
+                              : theme.inputBorder,
+                            borderRadius: "12px",
+                            padding: "9px 12px",
+                            color: theme.inputText,
+                            fontSize: "0.9rem",
+                            outline: "none",
+                          }}
+                        />
+                        {isUnblockRangeInvalid && (
+                          <div
+                            style={{
+                              fontSize: "0.74rem",
+                              color: "#ef4444",
+                              marginTop: "4px",
+                              lineHeight: 1.3,
+                            }}
+                          >
+                            End seat must be greater than or equal to start seat.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="d-flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowUnblockModal(false)}
+                        style={{
+                          flex: 1,
+                          background: isDarkMode
+                            ? "rgba(255, 255, 255, 0.08)"
+                            : "rgba(0, 0, 0, 0.05)",
+                          border: theme.inputBorder,
+                          color: theme.textPrimary,
+                          borderRadius: "12px",
+                          padding: "10px",
+                          fontWeight: 600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isUnblockRangeInvalid}
+                        style={{
+                          flex: 2,
+                          background: isUnblockRangeInvalid
+                            ? isDarkMode
+                              ? "rgba(255, 255, 255, 0.08)"
+                              : "rgba(0, 0, 0, 0.12)"
+                            : "linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)",
+                          border: "none",
+                          color: isUnblockRangeInvalid ? theme.textSecondary : "#ffffff",
+                          borderRadius: "12px",
+                          padding: "10px",
+                          fontWeight: 600,
+                          cursor: isUnblockRangeInvalid ? "not-allowed" : "pointer",
+                          boxShadow: isUnblockRangeInvalid
+                            ? "none"
+                            : "0 4px 15px rgba(220, 38, 38, 0.35)",
+                        }}
+                      >
+                        Unblock Seats
+                      </button>
+                    </div>
+                  </form>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. EDIT BOOKING MODAL */}
+      {editingSeat && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.78)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditingSeat(null);
+          }}
+        >
+          <div
+            style={{
+              background: theme.modalCardBg,
+              border: theme.modalBorder,
+              borderRadius: "26px",
+              boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
+              maxWidth: "480px",
+              width: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              position: "relative",
+              color: theme.textPrimary,
+              animation: "seatingModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "20px 24px",
+                borderBottom: theme.canvasBorder,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div className="d-flex align-items-center gap-2">
+                <span style={{ fontSize: "1.2rem" }}>✏️</span>
+                <div>
+                  <h5 style={{ margin: 0, fontWeight: 700, fontSize: "1.1rem" }}>
+                    Edit Reservation - Seat {editingSeat.label}
+                  </h5>
+                  <div style={{ fontSize: "0.76rem", color: theme.textSecondary }}>
+                    Update attendee contact or re-send gate pass
                   </div>
                 </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingSeat(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.textSecondary,
+                  fontSize: "1.2rem",
+                  cursor: "pointer",
+                  padding: "4px",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
 
-                <div className="d-flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowUnblockModal(false)}
+            {/* Body */}
+            <div style={{ padding: "24px" }}>
+              {/* Success Notification Banner */}
+              {editSaveSuccess && (
+                <div
+                  style={{
+                    background: "rgba(16, 185, 129, 0.15)",
+                    border: "1px solid rgba(16, 185, 129, 0.4)",
+                    color: "#10b981",
+                    borderRadius: "12px",
+                    padding: "10px 14px",
+                    fontSize: "0.84rem",
+                    fontWeight: 600,
+                    marginBottom: "16px",
+                  }}
+                >
+                  ✓ Reservation details updated successfully!
+                </div>
+              )}
+
+              {/* Resend Pass Email Message */}
+              {resendPassMsg && (
+                <div
+                  style={{
+                    background:
+                      resendPassMsg.type === "success"
+                        ? "rgba(16, 185, 129, 0.15)"
+                        : "rgba(239, 68, 68, 0.15)",
+                    border:
+                      resendPassMsg.type === "success"
+                        ? "1px solid rgba(16, 185, 129, 0.4)"
+                        : "1px solid rgba(239, 68, 68, 0.4)",
+                    color: resendPassMsg.type === "success" ? "#10b981" : "#ef4444",
+                    borderRadius: "12px",
+                    padding: "10px 14px",
+                    fontSize: "0.84rem",
+                    fontWeight: 600,
+                    marginBottom: "16px",
+                  }}
+                >
+                  {resendPassMsg.text}
+                </div>
+              )}
+
+              {/* Checked-In Status Notice */}
+              {editingSeat.hasCheckedIn && (
+                <div
+                  style={{
+                    background: isDarkMode
+                      ? "rgba(16, 185, 129, 0.12)"
+                      : "rgba(220, 252, 231, 0.8)",
+                    border: "1px solid rgba(16, 185, 129, 0.35)",
+                    color: isDarkMode ? "#6ee7b7" : "#15803d",
+                    borderRadius: "12px",
+                    padding: "9px 12px",
+                    fontSize: "0.8rem",
+                    marginBottom: "16px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                  }}
+                >
+                  <span>✓</span>
+                  <span>
+                    Guest is already admitted / checked in at the gate
+                    {editingSeat.checkedInByName ? ` by ${editingSeat.checkedInByName}` : ""}.
+                  </span>
+                </div>
+              )}
+
+              <form onSubmit={handleSaveEditBooking}>
+                {/* Guest Name */}
+                <div className="mb-3">
+                  <label
                     style={{
-                      flex: 1,
-                      background: isDarkMode
-                        ? "rgba(255, 255, 255, 0.08)"
-                        : "rgba(0, 0, 0, 0.05)",
-                      border: theme.inputBorder,
-                      color: theme.textPrimary,
-                      borderRadius: "12px",
-                      padding: "10px",
+                      display: "block",
+                      fontSize: "0.82rem",
                       fontWeight: 600,
-                      cursor: "pointer",
+                      marginBottom: "6px",
+                      color: theme.textPrimary,
                     }}
                   >
-                    Cancel
-                  </button>
+                    Guest / Student Full Name <span style={{ color: "#ef4444" }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editGuestName}
+                    onChange={(e) => setEditGuestName(e.target.value)}
+                    style={{
+                      width: "100%",
+                      background: theme.inputBg,
+                      border: theme.inputBorder,
+                      borderRadius: "12px",
+                      padding: "10px 14px",
+                      color: theme.inputText,
+                      fontSize: "0.92rem",
+                      outline: "none",
+                    }}
+                  />
+                </div>
+
+                {/* Contact Number */}
+                <div className="mb-3">
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.82rem",
+                      fontWeight: 600,
+                      marginBottom: "6px",
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    Phone / Contact Number (10 digits) <span style={{ color: "#ef4444" }}>*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    required
+                    placeholder="e.g. 9876543210"
+                    value={editGuestContact}
+                    onKeyDown={preventNonNumeric}
+                    onChange={(e) =>
+                      setEditGuestContact(e.target.value.replace(/\D/g, "").slice(0, 10))
+                    }
+                    style={{
+                      width: "100%",
+                      background: theme.inputBg,
+                      border:
+                        editGuestContact.length > 0 && editGuestContact.length < 10
+                          ? "1px solid #ef4444"
+                          : theme.inputBorder,
+                      borderRadius: "12px",
+                      padding: "10px 14px",
+                      color: theme.inputText,
+                      fontSize: "0.92rem",
+                      outline: "none",
+                    }}
+                  />
+                  {editGuestContact.length > 0 && editGuestContact.length < 10 && (
+                    <div
+                      style={{
+                        fontSize: "0.74rem",
+                        color: "#ef4444",
+                        marginTop: "4px",
+                      }}
+                    >
+                      Must be strictly 10 digits (currently {editGuestContact.length})
+                    </div>
+                  )}
+                </div>
+
+                {/* Email Address */}
+                <div className="mb-4">
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "0.82rem",
+                      fontWeight: 600,
+                      marginBottom: "6px",
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    Email Address <span style={{ color: "#ef4444" }}>*</span>
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. jaspreet@example.com"
+                    value={editGuestEmail}
+                    onChange={(e) => setEditGuestEmail(e.target.value)}
+                    style={{
+                      width: "100%",
+                      background: theme.inputBg,
+                      border:
+                        editGuestEmail.length > 0 && !isValidEmail(editGuestEmail)
+                          ? "1px solid #ef4444"
+                          : theme.inputBorder,
+                      borderRadius: "12px",
+                      padding: "10px 14px",
+                      color: theme.inputText,
+                      fontSize: "0.92rem",
+                      outline: "none",
+                    }}
+                  />
+                  {editGuestEmail.length > 0 && !isValidEmail(editGuestEmail) && (
+                    <div
+                      style={{
+                        fontSize: "0.74rem",
+                        color: "#ef4444",
+                        marginTop: "4px",
+                      }}
+                    >
+                      Please enter a valid email ending with a domain (e.g. name@xyz.in or name@example.com).
+                    </div>
+                  )}
+                </div>
+
+                {/* Action Buttons: Save & Resend */}
+                <div className="d-flex gap-2 mb-3">
                   <button
                     type="submit"
+                    disabled={
+                      isSavingEdit ||
+                      !editGuestName.trim() ||
+                      editGuestContact.length !== 10 ||
+                      !isValidEmail(editGuestEmail)
+                    }
                     style={{
                       flex: 2,
-                      background: "linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)",
+                      background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
                       border: "none",
                       color: "#ffffff",
                       borderRadius: "12px",
                       padding: "10px",
                       fontWeight: 600,
-                      cursor: "pointer",
-                      boxShadow: "0 4px 15px rgba(220, 38, 38, 0.35)",
+                      fontSize: "0.88rem",
+                      cursor:
+                        isSavingEdit ||
+                        !editGuestName.trim() ||
+                        editGuestContact.length !== 10 ||
+                        !isValidEmail(editGuestEmail)
+                          ? "not-allowed"
+                          : "pointer",
+                      opacity:
+                        isSavingEdit ||
+                        !editGuestName.trim() ||
+                        editGuestContact.length !== 10 ||
+                        !isValidEmail(editGuestEmail)
+                          ? 0.6
+                          : 1,
+                      boxShadow: "0 4px 14px rgba(37, 99, 235, 0.35)",
                     }}
                   >
-                    Unblock Seats
+                    {isSavingEdit ? "Saving Changes..." : "💾 Save Changes"}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResendPassEmail}
+                    disabled={isResendingPass || !isValidEmail(editGuestEmail)}
+                    style={{
+                      flex: 1.5,
+                      background: isDarkMode
+                        ? "rgba(37, 99, 235, 0.2)"
+                        : "rgba(219, 234, 254, 0.8)",
+                      border: "1px solid rgba(59, 130, 246, 0.4)",
+                      color: isDarkMode ? "#93c5fd" : "#1d4ed8",
+                      borderRadius: "12px",
+                      padding: "10px",
+                      fontWeight: 600,
+                      fontSize: "0.84rem",
+                      cursor:
+                        isResendingPass || !isValidEmail(editGuestEmail)
+                          ? "not-allowed"
+                          : "pointer",
+                      opacity: isResendingPass || !isValidEmail(editGuestEmail) ? 0.6 : 1,
+                    }}
+                  >
+                    {isResendingPass ? "Sending..." : "✉️ Re-send Pass"}
+                  </button>
+                </div>
+
+                {/* Danger Zone: Custom Cancellation Trigger */}
+                <div
+                  style={{
+                    borderTop: theme.canvasBorder,
+                    paddingTop: "14px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCancelingSeat(editingSeat);
+                      setCancelReason("Guest Request");
+                      setCancelNotes("");
+                    }}
+                    style={{
+                      background: "transparent",
+                      border: "1px solid rgba(239, 68, 68, 0.45)",
+                      color: "#ef4444",
+                      borderRadius: "10px",
+                      padding: "8px 14px",
+                      fontSize: "0.82rem",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    🗑️ Cancel Reservation...
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setEditingSeat(null)}
+                    style={{
+                      background: isDarkMode
+                        ? "rgba(255, 255, 255, 0.08)"
+                        : "rgba(0, 0, 0, 0.05)",
+                      border: theme.inputBorder,
+                      color: theme.textPrimary,
+                      borderRadius: "10px",
+                      padding: "8px 16px",
+                      fontSize: "0.84rem",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Close
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. CUSTOM CANCELLATION MODAL */}
+      {cancelingSeat && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.8)",
+            backdropFilter: "blur(14px)",
+            WebkitBackdropFilter: "blur(14px)",
+            zIndex: 100000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setCancelingSeat(null);
+          }}
+        >
+          <div
+            style={{
+              background: theme.modalCardBg,
+              border: isDarkMode
+                ? "1px solid rgba(239, 68, 68, 0.35)"
+                : "1px solid rgba(252, 165, 165, 0.9)",
+              borderRadius: "26px",
+              boxShadow: "0 25px 60px rgba(0, 0, 0, 0.8)",
+              maxWidth: "460px",
+              width: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              position: "relative",
+              color: theme.textPrimary,
+              animation: "seatingModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "20px 24px",
+                background: isDarkMode
+                  ? "rgba(239, 68, 68, 0.15)"
+                  : "rgba(254, 226, 226, 0.8)",
+                borderBottom: isDarkMode
+                  ? "1px solid rgba(239, 68, 68, 0.25)"
+                  : "1px solid rgba(252, 165, 165, 0.8)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div className="d-flex align-items-center gap-2">
+                <span style={{ fontSize: "1.3rem" }}>⚠️</span>
+                <div>
+                  <h5
+                    style={{
+                      margin: 0,
+                      fontWeight: 700,
+                      fontSize: "1.1rem",
+                      color: isDarkMode ? "#fca5a5" : "#b91c1c",
+                    }}
+                  >
+                    Confirm Cancellation
+                  </h5>
+                  <div
+                    style={{
+                      fontSize: "0.76rem",
+                      color: isDarkMode ? "#f87171" : "#dc2626",
+                    }}
+                  >
+                    Release seat reservation back to available
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCancelingSeat(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.textSecondary,
+                  fontSize: "1.2rem",
+                  cursor: "pointer",
+                  padding: "4px",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: "24px" }}>
+              {/* Attendee details summary card */}
+              <div
+                style={{
+                  background: isDarkMode
+                    ? "rgba(0, 0, 0, 0.25)"
+                    : "rgba(241, 245, 249, 0.9)",
+                  border: theme.inputBorder,
+                  borderRadius: "16px",
+                  padding: "14px",
+                  marginBottom: "16px",
+                  fontSize: "0.85rem",
+                }}
+              >
+                <div className="d-flex justify-content-between align-items-center mb-1">
+                  <span style={{ color: theme.textSecondary }}>Seat:</span>
+                  <strong style={{ color: "#2563eb", fontSize: "0.95rem" }}>
+                    {cancelingSeat.label}
+                  </strong>
+                </div>
+                <div className="d-flex justify-content-between align-items-center mb-1">
+                  <span style={{ color: theme.textSecondary }}>Guest:</span>
+                  <strong>{cancelingSeat.name || "N/A"}</strong>
+                </div>
+                {cancelingSeat.contact && (
+                  <div className="d-flex justify-content-between align-items-center mb-1">
+                    <span style={{ color: theme.textSecondary }}>Contact:</span>
+                    <span>{cancelingSeat.contact}</span>
+                  </div>
+                )}
+                {cancelingSeat.email && (
+                  <div className="d-flex justify-content-between align-items-center">
+                    <span style={{ color: theme.textSecondary }}>Email:</span>
+                    <span className="text-truncate" style={{ maxWidth: "220px" }}>
+                      {cancelingSeat.email}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* CRITICAL WARNING: Guest already checked in */}
+              {cancelingSeat.hasCheckedIn && (
+                <div
+                  style={{
+                    background: "rgba(239, 68, 68, 0.18)",
+                    border: "1px solid #ef4444",
+                    color: "#ef4444",
+                    borderRadius: "12px",
+                    padding: "10px 14px",
+                    marginBottom: "16px",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  🚨 <strong>ATTENTION:</strong> This attendee has ALREADY CHECKED IN at the
+                  gate! Canceling will void their pass and make the seat open for re-booking.
+                </div>
+              )}
+
+              {/* Cancellation Reason Selector */}
+              <div className="mb-3">
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    marginBottom: "6px",
+                    color: theme.textPrimary,
+                  }}
+                >
+                  Cancellation Reason <span style={{ color: "#ef4444" }}>*</span>
+                </label>
+                <select
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  style={{
+                    width: "100%",
+                    background: theme.inputBg,
+                    border: theme.inputBorder,
+                    borderRadius: "12px",
+                    padding: "10px 12px",
+                    color: theme.inputText,
+                    fontSize: "0.88rem",
+                    outline: "none",
+                  }}
+                >
+                  <option value="Guest Request">Guest Request (Change of Plans)</option>
+                  <option value="Duplicate / Accidental">
+                    Duplicate / Accidental Booking
+                  </option>
+                  <option value="Seat Reassignment">Seat Reassignment / Upgrade</option>
+                  <option value="No Show / Other">No Show / Other</option>
+                </select>
+              </div>
+
+              {/* Optional Notes */}
+              <div className="mb-4">
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    marginBottom: "6px",
+                    color: theme.textPrimary,
+                  }}
+                >
+                  Optional Notes (for audit trail)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="e.g. Guest requested row change via phone"
+                  value={cancelNotes}
+                  onChange={(e) => setCancelNotes(e.target.value)}
+                  style={{
+                    width: "100%",
+                    background: theme.inputBg,
+                    border: theme.inputBorder,
+                    borderRadius: "12px",
+                    padding: "10px 14px",
+                    color: theme.inputText,
+                    fontSize: "0.88rem",
+                    outline: "none",
+                    resize: "vertical",
+                  }}
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="d-flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCancelingSeat(null)}
+                  style={{
+                    flex: 1,
+                    background: isDarkMode
+                      ? "rgba(255, 255, 255, 0.08)"
+                      : "rgba(0, 0, 0, 0.05)",
+                    border: theme.inputBorder,
+                    color: theme.textPrimary,
+                    borderRadius: "12px",
+                    padding: "11px",
+                    fontWeight: 600,
+                    fontSize: "0.88rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  Keep Reservation
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleConfirmCancellation}
+                  disabled={isProcessingCancel}
+                  style={{
+                    flex: 1.5,
+                    background: "linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)",
+                    border: "none",
+                    color: "#ffffff",
+                    borderRadius: "12px",
+                    padding: "11px",
+                    fontWeight: 600,
+                    fontSize: "0.88rem",
+                    cursor: isProcessingCancel ? "not-allowed" : "pointer",
+                    boxShadow: "0 4px 15px rgba(220, 38, 38, 0.4)",
+                  }}
+                >
+                  {isProcessingCancel ? "Canceling..." : "Confirm Cancellation"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. SINGLE SEAT UNBLOCK CONFIRMATION MODAL */}
+      {unblockingSeat && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.78)",
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setUnblockingSeat(null);
+          }}
+        >
+          <div
+            style={{
+              background: theme.modalCardBg,
+              border: theme.modalBorder,
+              borderRadius: "24px",
+              boxShadow: "0 25px 60px rgba(0, 0, 0, 0.75)",
+              maxWidth: "420px",
+              width: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              WebkitOverflowScrolling: "touch",
+              position: "relative",
+              color: theme.textPrimary,
+              animation: "seatingModalPop 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                padding: "20px 24px",
+                borderBottom: theme.canvasBorder,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div className="d-flex align-items-center gap-2">
+                <span style={{ fontSize: "1.2rem" }}>🔓</span>
+                <h5 style={{ margin: 0, fontWeight: 700, fontSize: "1.1rem" }}>
+                  Unblock Seat {unblockingSeat.label}
+                </h5>
+              </div>
+              <button
+                type="button"
+                onClick={() => setUnblockingSeat(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: theme.textSecondary,
+                  fontSize: "1.2rem",
+                  cursor: "pointer",
+                  padding: "4px",
+                  lineHeight: 1,
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: "24px" }}>
+              <p
+                style={{
+                  fontSize: "0.88rem",
+                  color: theme.textPrimary,
+                  marginBottom: "20px",
+                  lineHeight: 1.5,
+                }}
+              >
+                Are you sure you want to unblock seat{" "}
+                <strong>{unblockingSeat.label}</strong>? It will immediately become
+                available for reservation.
+              </p>
+
+              <div className="d-flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setUnblockingSeat(null)}
+                  style={{
+                    flex: 1,
+                    background: isDarkMode
+                      ? "rgba(255, 255, 255, 0.08)"
+                      : "rgba(0, 0, 0, 0.05)",
+                    border: theme.inputBorder,
+                    color: theme.textPrimary,
+                    borderRadius: "12px",
+                    padding: "10px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmUnblock}
+                  disabled={isProcessingUnblock}
+                  style={{
+                    flex: 1.5,
+                    background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                    border: "none",
+                    color: "#ffffff",
+                    borderRadius: "12px",
+                    padding: "10px",
+                    fontWeight: 600,
+                    cursor: isProcessingUnblock ? "not-allowed" : "pointer",
+                    boxShadow: "0 4px 15px rgba(16, 185, 129, 0.35)",
+                  }}
+                >
+                  {isProcessingUnblock ? "Unblocking..." : "Unblock Seat"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1733,6 +3865,16 @@ function SeatingPage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* EVENT PASS BRANDING MODAL */}
+      {showBrandingModal && (
+        <EventBrandingModal
+          eventId={eventId}
+          eventData={eventData}
+          onClose={() => setShowBrandingModal(false)}
+          isDarkMode={isDarkMode}
+        />
       )}
 
       {/* FOOTER */}

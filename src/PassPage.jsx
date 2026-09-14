@@ -354,6 +354,10 @@ export default function PassPage() {
 
           .pass-ticket-header img {
             max-height: 44px !important;
+            max-width: 180px !important;
+            width: auto !important;
+            height: auto !important;
+            object-fit: contain !important;
             margin-bottom: 6px !important;
           }
 
@@ -484,8 +488,10 @@ export default function PassPage() {
               src={logoUrl}
               alt="Logo"
               style={{
-                height: "56px",
+                maxHeight: "56px",
                 maxWidth: "200px",
+                width: "auto",
+                height: "auto",
                 objectFit: "contain",
                 marginBottom: "12px",
               }}

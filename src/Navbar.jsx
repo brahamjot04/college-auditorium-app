@@ -13,6 +13,7 @@ import { auth, db } from "./firebase";
 import { useAuth } from "./AuthContext";
 import { uploadToGitHub, fetchImageFromGitHub } from "./utils/github";
 import { sendGatePassEmail } from "./utils/emailService";
+import ConfirmDiscardModal from "./ConfirmDiscardModal";
 
 function Navbar({ isDarkMode = false }) {
   const { user, userName, isAdmin, isSuperAdmin } = useAuth();
@@ -24,6 +25,7 @@ function Navbar({ isDarkMode = false }) {
 
   // Settings Modal State
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const [settingsTab, setSettingsTab] = useState("email");
   const [serviceId, setServiceId] = useState("");
   const [templateId, setTemplateId] = useState("");
@@ -43,6 +45,10 @@ function Navbar({ isDarkMode = false }) {
   const [isSendingTest, setIsSendingTest] = useState(false);
   const [testResult, setTestResult] = useState(null);
 
+  // Snapshot of saved Firestore settings for dirty checking and discarding unsaved edits
+  const savedSettingsRef = useRef(null);
+  const tempBlobUrlRef = useRef(null);
+
   // Load system settings from Firestore
   useEffect(() => {
     if (!isAdmin) return;
@@ -50,35 +56,160 @@ function Navbar({ isDarkMode = false }) {
       .then((snap) => {
         if (snap.exists()) {
           const data = snap.data();
-          if (data.email) {
-            setServiceId(data.email.serviceId || "");
-            setTemplateId(data.email.templateId || "");
-            setPublicKey(data.email.publicKey || "");
-          }
-          if (data.branding) {
-            setOrgTitle(data.branding.orgTitle || "Cultural Committee GNDEC");
-            setSubtitle(data.branding.subtitle || "GNDEC Main Auditorium, Ludhiana");
-            setAccentColor(data.branding.accentColor || "#2563eb");
-            setEntryNotes(
-              data.branding.entryNotes ||
-                "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
-            );
-            if (data.branding.logoPath) {
-              setLogoPath(data.branding.logoPath);
-              fetchImageFromGitHub(data.branding.logoPath).then((url) => {
-                if (url) setLogoPreview(url);
-              });
-            }
+          const sId = data.email?.serviceId || "";
+          const tId = data.email?.templateId || "";
+          const pKey = data.email?.publicKey || "";
+          const oTitle = data.branding?.orgTitle || "Cultural Committee GNDEC";
+          const sub = data.branding?.subtitle || "GNDEC Main Auditorium, Ludhiana";
+          const aColor = data.branding?.accentColor || "#2563eb";
+          const eNotes =
+            data.branding?.entryNotes ||
+            "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.";
+          const lPath = data.branding?.logoPath || "";
+
+          setServiceId(sId);
+          setTemplateId(tId);
+          setPublicKey(pKey);
+          setOrgTitle(oTitle);
+          setSubtitle(sub);
+          setAccentColor(aColor);
+          setEntryNotes(eNotes);
+          setLogoPath(lPath);
+          setLogoPreview("");
+
+          savedSettingsRef.current = {
+            serviceId: sId,
+            templateId: tId,
+            publicKey: pKey,
+            orgTitle: oTitle,
+            subtitle: sub,
+            accentColor: aColor,
+            entryNotes: eNotes,
+            logoPath: lPath,
+            logoPreview: "",
+          };
+
+          if (lPath) {
+            fetchImageFromGitHub(lPath).then((url) => {
+              if (url) {
+                setLogoPreview(url);
+                if (savedSettingsRef.current) {
+                  savedSettingsRef.current.logoPreview = url;
+                }
+              }
+            });
           }
         } else {
           // Defaults from working setup
-          setServiceId("service_og3ze6m");
-          setTemplateId("template_xbboh6j");
-          setPublicKey("PzNJuoItwBZtKTwOG");
+          const sId = "service_og3ze6m";
+          const tId = "template_xbboh6j";
+          const pKey = "PzNJuoItwBZtKTwOG";
+          const oTitle = "Cultural Committee GNDEC";
+          const sub = "GNDEC Main Auditorium, Ludhiana";
+          const aColor = "#2563eb";
+          const eNotes =
+            "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.";
+          const lPath = "";
+
+          setServiceId(sId);
+          setTemplateId(tId);
+          setPublicKey(pKey);
+          setOrgTitle(oTitle);
+          setSubtitle(sub);
+          setAccentColor(aColor);
+          setEntryNotes(eNotes);
+          setLogoPath(lPath);
+          setLogoPreview("");
+
+          savedSettingsRef.current = {
+            serviceId: sId,
+            templateId: tId,
+            publicKey: pKey,
+            orgTitle: oTitle,
+            subtitle: sub,
+            accentColor: aColor,
+            entryNotes: eNotes,
+            logoPath: lPath,
+            logoPreview: "",
+          };
         }
       })
       .catch((err) => console.warn("Could not load system settings:", err));
   }, [isAdmin, showSettingsModal]);
+
+  // Check if form has unsaved modifications
+  const hasUnsavedChanges = () => {
+    if (!savedSettingsRef.current) return false;
+    const s = savedSettingsRef.current;
+    return (
+      serviceId !== s.serviceId ||
+      templateId !== s.templateId ||
+      publicKey !== s.publicKey ||
+      orgTitle !== s.orgTitle ||
+      subtitle !== s.subtitle ||
+      accentColor !== s.accentColor ||
+      entryNotes !== s.entryNotes ||
+      logoPath !== s.logoPath ||
+      logoPreview !== s.logoPreview
+    );
+  };
+
+  // Revert all fields back to the last saved snapshot
+  const revertSettings = () => {
+    if (tempBlobUrlRef.current) {
+      URL.revokeObjectURL(tempBlobUrlRef.current);
+      tempBlobUrlRef.current = null;
+    }
+    if (!savedSettingsRef.current) return;
+    const s = savedSettingsRef.current;
+    setServiceId(s.serviceId);
+    setTemplateId(s.templateId);
+    setPublicKey(s.publicKey);
+    setOrgTitle(s.orgTitle);
+    setSubtitle(s.subtitle);
+    setAccentColor(s.accentColor);
+    setEntryNotes(s.entryNotes);
+    setLogoPath(s.logoPath);
+    setLogoPreview(s.logoPreview);
+  };
+
+  // Handle closing settings modal: prompt via in-app ConfirmDiscardModal if unsaved changes exist
+  const handleCloseSettings = () => {
+    if (hasUnsavedChanges()) {
+      setShowDiscardConfirm(true);
+      return;
+    }
+    setShowSettingsModal(false);
+  };
+
+  const handleConfirmDiscard = () => {
+    revertSettings();
+    setShowDiscardConfirm(false);
+    setShowSettingsModal(false);
+  };
+
+  const handleCancelDiscard = () => {
+    setShowDiscardConfirm(false);
+  };
+
+  const handleCloseSettingsRef = useRef(handleCloseSettings);
+  handleCloseSettingsRef.current = handleCloseSettings;
+
+  // Escape key listener for settings modal
+  useEffect(() => {
+    if (!showSettingsModal) return;
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") {
+        if (showDiscardConfirm) {
+          setShowDiscardConfirm(false);
+        } else {
+          handleCloseSettingsRef.current();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showSettingsModal, showDiscardConfirm]);
 
   // Listen to active members if user is admin
   useEffect(() => {
@@ -222,6 +353,21 @@ function Navbar({ isDarkMode = false }) {
         { merge: true },
       );
 
+      if (tempBlobUrlRef.current) {
+        tempBlobUrlRef.current = null;
+      }
+      savedSettingsRef.current = {
+        serviceId: serviceId.trim(),
+        templateId: templateId.trim(),
+        publicKey: publicKey.trim(),
+        orgTitle: orgTitle.trim(),
+        subtitle: subtitle.trim(),
+        accentColor: accentColor.trim(),
+        entryNotes: entryNotes.trim(),
+        logoPath: logoPath.trim(),
+        logoPreview: logoPreview,
+      };
+
       setSaveSuccessMsg("✅ Settings saved successfully! Changes apply instantly across the portal.");
       setTimeout(() => setSaveSuccessMsg(""), 4000);
     } catch (err) {
@@ -250,6 +396,14 @@ function Navbar({ isDarkMode = false }) {
       alert("Please upload an image file (PNG, JPG, SVG, WebP).");
       return;
     }
+
+    // Instant local preview in 0ms (no need to wait for GitHub or Save Settings)
+    if (tempBlobUrlRef.current) {
+      URL.revokeObjectURL(tempBlobUrlRef.current);
+    }
+    const localUrl = URL.createObjectURL(file);
+    tempBlobUrlRef.current = localUrl;
+    setLogoPreview(localUrl);
 
     setIsUploadingLogo(true);
     try {
@@ -1155,7 +1309,7 @@ function Navbar({ isDarkMode = false }) {
             padding: "20px",
           }}
           onClick={(e) => {
-            if (e.target === e.currentTarget) setShowSettingsModal(false);
+            if (e.target === e.currentTarget) handleCloseSettings();
           }}
         >
           <div
@@ -1218,7 +1372,7 @@ function Navbar({ isDarkMode = false }) {
               </div>
               <button
                 type="button"
-                onClick={() => setShowSettingsModal(false)}
+                onClick={handleCloseSettings}
                 style={{
                   background: "none",
                   border: "none",
@@ -1643,17 +1797,37 @@ function Navbar({ isDarkMode = false }) {
                       }}
                     >
                       {logoPreview ? (
-                        <img
-                          src={logoPreview}
-                          alt="Logo"
+                        <div
                           style={{
-                            width: "52px",
-                            height: "52px",
-                            borderRadius: "14px",
-                            objectFit: "cover",
-                            boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            maxHeight: "56px",
+                            maxWidth: "150px",
+                            padding: "4px 6px",
+                            borderRadius: "12px",
+                            background: isDarkMode
+                              ? "rgba(255, 255, 255, 0.05)"
+                              : "rgba(0, 0, 0, 0.03)",
+                            border: isDarkMode
+                              ? "1px solid rgba(255, 255, 255, 0.08)"
+                              : "1px solid rgba(0, 0, 0, 0.05)",
+                            boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                           }}
-                        />
+                        >
+                          <img
+                            src={logoPreview}
+                            alt="Logo"
+                            style={{
+                              maxHeight: "48px",
+                              maxWidth: "140px",
+                              width: "auto",
+                              height: "auto",
+                              objectFit: "contain",
+                              display: "block",
+                            }}
+                          />
+                        </div>
                       ) : (
                         <div
                           style={{
@@ -1923,6 +2097,10 @@ function Navbar({ isDarkMode = false }) {
                         <button
                           type="button"
                           onClick={() => {
+                            if (tempBlobUrlRef.current) {
+                              URL.revokeObjectURL(tempBlobUrlRef.current);
+                              tempBlobUrlRef.current = null;
+                            }
                             setLogoPath("");
                             setLogoPreview("");
                           }}
@@ -2007,7 +2185,7 @@ function Navbar({ isDarkMode = false }) {
             >
               <button
                 type="button"
-                onClick={() => setShowSettingsModal(false)}
+                onClick={handleCloseSettings}
                 style={{
                   background: isDarkMode
                     ? "rgba(255, 255, 255, 0.08)"
@@ -2027,17 +2205,34 @@ function Navbar({ isDarkMode = false }) {
               <button
                 type="button"
                 onClick={handleSaveSettings}
-                disabled={isSavingSettings}
+                disabled={isSavingSettings || isUploadingLogo || !hasUnsavedChanges()}
                 style={{
-                  background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
-                  boxShadow: "0 4px 14px rgba(37, 99, 235, 0.3)",
+                  background:
+                    isSavingSettings || isUploadingLogo || !hasUnsavedChanges()
+                      ? isDarkMode
+                        ? "rgba(255, 255, 255, 0.12)"
+                        : "#cbd5e1"
+                      : "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                  boxShadow:
+                    isSavingSettings || isUploadingLogo || !hasUnsavedChanges()
+                      ? "none"
+                      : "0 4px 14px rgba(37, 99, 235, 0.3)",
                   border: "none",
-                  color: "#ffffff",
+                  color:
+                    isSavingSettings || isUploadingLogo || !hasUnsavedChanges()
+                      ? isDarkMode
+                        ? "rgba(255, 255, 255, 0.4)"
+                        : "#94a3b8"
+                      : "#ffffff",
                   borderRadius: "12px",
                   padding: "8px 22px",
                   fontWeight: 600,
                   fontSize: "0.85rem",
-                  cursor: isSavingSettings ? "not-allowed" : "pointer",
+                  cursor:
+                    isSavingSettings || isUploadingLogo || !hasUnsavedChanges()
+                      ? "not-allowed"
+                      : "pointer",
+                  transition: "all 0.2s ease",
                 }}
               >
                 {isSavingSettings ? "Saving..." : "💾 Save Settings"}
@@ -2046,6 +2241,16 @@ function Navbar({ isDarkMode = false }) {
           </div>
         </div>
       )}
+
+      {/* Custom In-App Confirm Discard Modal */}
+      <ConfirmDiscardModal
+        isOpen={showDiscardConfirm}
+        onKeepEditing={handleCancelDiscard}
+        onDiscard={handleConfirmDiscard}
+        isDarkMode={isDarkMode}
+        title="Discard Settings Changes?"
+        message="You have unsaved changes that will be lost, including any uploaded logo or modified credentials. Are you sure you want to discard your changes and close?"
+      />
     </>
   );
 }

@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { doc, updateDoc, getDoc } from "firebase/firestore";
 import { db } from "./firebase";
 import { uploadToGitHub, fetchImageFromGitHub } from "./utils/github";
+import ConfirmDiscardModal from "./ConfirmDiscardModal";
 
 function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode = false }) {
   const [orgTitle, setOrgTitle] = useState("");
@@ -14,6 +15,11 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState("");
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
+
+  // Snapshot of saved event branding for dirty checking and discarding unsaved edits
+  const savedBrandingRef = useRef(null);
+  const tempBlobUrlRef = useRef(null);
 
   const presetColors = [
     { label: "Classic Blue", value: "#2563eb" },
@@ -29,17 +35,38 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
   useEffect(() => {
     const existing = eventData?.branding;
     if (existing) {
-      setOrgTitle(existing.orgTitle || eventData?.name || "Cultural Committee GNDEC");
-      setSubtitle(existing.subtitle || eventData?.venue || "GNDEC Main Auditorium, Ludhiana");
-      setAccentColor(existing.accentColor || "#2563eb");
-      setEntryNotes(
+      const title = existing.orgTitle || eventData?.name || "Cultural Committee GNDEC";
+      const sub = existing.subtitle || eventData?.venue || "GNDEC Main Auditorium, Ludhiana";
+      const col = existing.accentColor || "#2563eb";
+      const notes =
         existing.entryNotes ||
-          "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
-      );
-      if (existing.logoPath) {
-        setLogoPath(existing.logoPath);
-        fetchImageFromGitHub(existing.logoPath).then((url) => {
-          if (url) setLogoPreview(url);
+        "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.";
+      const lPath = existing.logoPath || "";
+
+      setOrgTitle(title);
+      setSubtitle(sub);
+      setAccentColor(col);
+      setEntryNotes(notes);
+      setLogoPath(lPath);
+      setLogoPreview("");
+
+      savedBrandingRef.current = {
+        orgTitle: title,
+        subtitle: sub,
+        accentColor: col,
+        entryNotes: notes,
+        logoPath: lPath,
+        logoPreview: "",
+      };
+
+      if (lPath) {
+        fetchImageFromGitHub(lPath).then((url) => {
+          if (url) {
+            setLogoPreview(url);
+            if (savedBrandingRef.current) {
+              savedBrandingRef.current.logoPreview = url;
+            }
+          }
         });
       }
     } else {
@@ -48,47 +75,146 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
         .then((snap) => {
           if (snap.exists() && snap.data().branding) {
             const b = snap.data().branding;
-            setOrgTitle(b.orgTitle || "Cultural Committee GNDEC");
-            setSubtitle(b.subtitle || "GNDEC Main Auditorium, Ludhiana");
-            setAccentColor(b.accentColor || "#2563eb");
-            setEntryNotes(
+            const title = b.orgTitle || "Cultural Committee GNDEC";
+            const sub = b.subtitle || "GNDEC Main Auditorium, Ludhiana";
+            const col = b.accentColor || "#2563eb";
+            const notes =
               b.entryNotes ||
-                "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
-            );
-            if (b.logoPath) {
-              setLogoPath(b.logoPath);
-              fetchImageFromGitHub(b.logoPath).then((url) => {
-                if (url) setLogoPreview(url);
+              "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.";
+            const lPath = b.logoPath || "";
+
+            setOrgTitle(title);
+            setSubtitle(sub);
+            setAccentColor(col);
+            setEntryNotes(notes);
+            setLogoPath(lPath);
+            setLogoPreview("");
+
+            savedBrandingRef.current = {
+              orgTitle: title,
+              subtitle: sub,
+              accentColor: col,
+              entryNotes: notes,
+              logoPath: lPath,
+              logoPreview: "",
+            };
+
+            if (lPath) {
+              fetchImageFromGitHub(lPath).then((url) => {
+                if (url) {
+                  setLogoPreview(url);
+                  if (savedBrandingRef.current) {
+                    savedBrandingRef.current.logoPreview = url;
+                  }
+                }
               });
             }
           } else {
-            setOrgTitle("Cultural Committee GNDEC");
-            setSubtitle("GNDEC Main Auditorium, Ludhiana");
-            setAccentColor("#2563eb");
-            setEntryNotes(
-              "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
-            );
+            const def = {
+              orgTitle: "Cultural Committee GNDEC",
+              subtitle: "GNDEC Main Auditorium, Ludhiana",
+              accentColor: "#2563eb",
+              entryNotes:
+                "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
+              logoPath: "",
+              logoPreview: "",
+            };
+            setOrgTitle(def.orgTitle);
+            setSubtitle(def.subtitle);
+            setAccentColor(def.accentColor);
+            setEntryNotes(def.entryNotes);
+            setLogoPath("");
+            setLogoPreview("");
+            savedBrandingRef.current = def;
           }
         })
         .catch(() => {
-          setOrgTitle("Cultural Committee GNDEC");
-          setSubtitle("GNDEC Main Auditorium, Ludhiana");
-          setAccentColor("#2563eb");
-          setEntryNotes(
-            "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
-          );
+          const def = {
+            orgTitle: "Cultural Committee GNDEC",
+            subtitle: "GNDEC Main Auditorium, Ludhiana",
+            accentColor: "#2563eb",
+            entryNotes:
+              "Please report 15 minutes before the event. Have this digital pass open on your screen at the gate.",
+            logoPath: "",
+            logoPreview: "",
+          };
+          setOrgTitle(def.orgTitle);
+          setSubtitle(def.subtitle);
+          setAccentColor(def.accentColor);
+          setEntryNotes(def.entryNotes);
+          setLogoPath("");
+          setLogoPreview("");
+          savedBrandingRef.current = def;
         });
     }
   }, [eventData]);
 
+  // Check if branding form has unsaved modifications
+  const hasUnsavedChanges = () => {
+    if (!savedBrandingRef.current) return false;
+    const s = savedBrandingRef.current;
+    return (
+      orgTitle !== s.orgTitle ||
+      subtitle !== s.subtitle ||
+      accentColor !== s.accentColor ||
+      entryNotes !== s.entryNotes ||
+      logoPath !== s.logoPath ||
+      logoPreview !== s.logoPreview
+    );
+  };
+
+  // Revert all fields back to the last saved snapshot
+  const revertBranding = () => {
+    if (tempBlobUrlRef.current) {
+      URL.revokeObjectURL(tempBlobUrlRef.current);
+      tempBlobUrlRef.current = null;
+    }
+    if (!savedBrandingRef.current) return;
+    const s = savedBrandingRef.current;
+    setOrgTitle(s.orgTitle);
+    setSubtitle(s.subtitle);
+    setAccentColor(s.accentColor);
+    setEntryNotes(s.entryNotes);
+    setLogoPath(s.logoPath);
+    setLogoPreview(s.logoPreview);
+  };
+
+  // Handle closing branding modal: prompt via in-app ConfirmDiscardModal if unsaved changes exist
+  const handleCloseModal = () => {
+    if (hasUnsavedChanges()) {
+      setShowDiscardConfirm(true);
+      return;
+    }
+    onClose();
+  };
+
+  const handleConfirmDiscard = () => {
+    revertBranding();
+    setShowDiscardConfirm(false);
+    onClose();
+  };
+
+  const handleCancelDiscard = () => {
+    setShowDiscardConfirm(false);
+  };
+
+  const handleCloseModalRef = useRef(handleCloseModal);
+  handleCloseModalRef.current = handleCloseModal;
+
   // Escape key listener to close modal
   useEffect(() => {
     const handleKeyDown = (e) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        if (showDiscardConfirm) {
+          setShowDiscardConfirm(false);
+        } else {
+          handleCloseModalRef.current();
+        }
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  }, [showDiscardConfirm]);
 
   const handleLogoUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -98,6 +224,14 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
       setError("Please upload an image file (PNG, JPG, SVG, WebP).");
       return;
     }
+
+    // Instant local preview in 0ms (no need to wait for GitHub or Save)
+    if (tempBlobUrlRef.current) {
+      URL.revokeObjectURL(tempBlobUrlRef.current);
+    }
+    const localUrl = URL.createObjectURL(file);
+    tempBlobUrlRef.current = localUrl;
+    setLogoPreview(localUrl);
 
     setIsUploadingLogo(true);
     setError("");
@@ -117,6 +251,10 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
   };
 
   const handleRemoveLogo = () => {
+    if (tempBlobUrlRef.current) {
+      URL.revokeObjectURL(tempBlobUrlRef.current);
+      tempBlobUrlRef.current = null;
+    }
     setLogoPath("");
     setLogoPreview("");
   };
@@ -144,6 +282,18 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
       await updateDoc(doc(db, "events", eventId), {
         branding: brandingData,
       });
+
+      if (tempBlobUrlRef.current) {
+        tempBlobUrlRef.current = null;
+      }
+      savedBrandingRef.current = {
+        orgTitle: brandingData.orgTitle,
+        subtitle: brandingData.subtitle,
+        accentColor: brandingData.accentColor,
+        entryNotes: brandingData.entryNotes,
+        logoPath: brandingData.logoPath,
+        logoPreview: logoPreview,
+      };
 
       setSaveSuccess(true);
       if (onSaved) onSaved(brandingData);
@@ -189,7 +339,7 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
         padding: "20px",
       }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) handleCloseModal();
       }}
     >
       <div
@@ -244,7 +394,7 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleCloseModal}
             style={{
               background: "transparent",
               border: "none",
@@ -320,17 +470,37 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
               }}
             >
               {logoPreview ? (
-                <img
-                  src={logoPreview}
-                  alt="Logo"
+                <div
                   style={{
-                    width: "52px",
-                    height: "52px",
-                    borderRadius: "14px",
-                    objectFit: "cover",
-                    boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    maxHeight: "56px",
+                    maxWidth: "150px",
+                    padding: "4px 6px",
+                    borderRadius: "12px",
+                    background: isDarkMode
+                      ? "rgba(255, 255, 255, 0.05)"
+                      : "rgba(0, 0, 0, 0.03)",
+                    border: isDarkMode
+                      ? "1px solid rgba(255, 255, 255, 0.08)"
+                      : "1px solid rgba(0, 0, 0, 0.05)",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                   }}
-                />
+                >
+                  <img
+                    src={logoPreview}
+                    alt="Logo"
+                    style={{
+                      maxHeight: "48px",
+                      maxWidth: "140px",
+                      width: "auto",
+                      height: "auto",
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                  />
+                </div>
               ) : (
                 <div
                   style={{
@@ -639,7 +809,7 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
             <div className="d-flex gap-2">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleCloseModal}
                 style={{
                   flex: 1,
                   background: isDarkMode
@@ -657,17 +827,34 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
               </button>
               <button
                 type="submit"
-                disabled={isSaving || isUploadingLogo}
+                disabled={isSaving || isUploadingLogo || !hasUnsavedChanges()}
                 style={{
                   flex: 2,
-                  background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                  background:
+                    isSaving || isUploadingLogo || !hasUnsavedChanges()
+                      ? isDarkMode
+                        ? "rgba(255, 255, 255, 0.12)"
+                        : "#cbd5e1"
+                      : "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
                   border: "none",
-                  color: "#ffffff",
+                  color:
+                    isSaving || isUploadingLogo || !hasUnsavedChanges()
+                      ? isDarkMode
+                        ? "rgba(255, 255, 255, 0.4)"
+                        : "#94a3b8"
+                      : "#ffffff",
                   borderRadius: "12px",
                   padding: "10px",
                   fontWeight: 600,
-                  cursor: isSaving || isUploadingLogo ? "not-allowed" : "pointer",
-                  boxShadow: "0 4px 15px rgba(37, 99, 235, 0.35)",
+                  cursor:
+                    isSaving || isUploadingLogo || !hasUnsavedChanges()
+                      ? "not-allowed"
+                      : "pointer",
+                  boxShadow:
+                    isSaving || isUploadingLogo || !hasUnsavedChanges()
+                      ? "none"
+                      : "0 4px 15px rgba(37, 99, 235, 0.35)",
+                  transition: "all 0.2s ease",
                 }}
               >
                 {isSaving ? "Saving Branding..." : "Save Event Branding"}
@@ -676,6 +863,16 @@ function EventBrandingModal({ eventId, eventData, onClose, onSaved, isDarkMode =
           </form>
         </div>
       </div>
+
+      {/* Custom In-App Confirm Discard Modal */}
+      <ConfirmDiscardModal
+        isOpen={showDiscardConfirm}
+        onKeepEditing={handleCancelDiscard}
+        onDiscard={handleConfirmDiscard}
+        isDarkMode={isDarkMode}
+        title="Discard Branding Changes?"
+        message="You have unsaved changes that will be lost, including any newly uploaded logo. Are you sure you want to discard your changes and close?"
+      />
     </div>
   );
 }

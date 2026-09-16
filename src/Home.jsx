@@ -544,33 +544,89 @@ function Home() {
             </div>
 
             {isAdmin && (
-              <button
-                type="button"
-                onClick={() =>
-                  window.dispatchEvent(new CustomEvent("open-emailjs-settings"))
-                }
+              <div
                 style={{
-                  background: isDarkMode ? "#f59e0b" : "#d97706",
-                  color: "#ffffff",
-                  border: "none",
-                  borderRadius: "10px",
-                  padding: "8px 16px",
-                  fontSize: "0.82rem",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  display: "inline-flex",
+                  display: "flex",
                   alignItems: "center",
-                  gap: "6px",
-                  boxShadow: "0 2px 6px rgba(217, 119, 6, 0.3)",
-                  whiteSpace: "nowrap",
-                  transition: "opacity 0.2s ease",
+                  gap: "8px",
+                  flexWrap: "wrap",
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.9")}
-                onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
               >
-                <span>⚙️</span>
-                <span>Configure EmailJS</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("open-emailjs-settings", {
+                        detail: { tab: "template" },
+                      }),
+                    )
+                  }
+                  style={{
+                    background: isDarkMode
+                      ? "rgba(245, 158, 11, 0.15)"
+                      : "rgba(217, 119, 6, 0.12)",
+                    color: isDarkMode ? "#fbbf24" : "#92400e",
+                    border: isDarkMode
+                      ? "1px solid rgba(245, 158, 11, 0.45)"
+                      : "1px solid rgba(217, 119, 6, 0.35)",
+                    borderRadius: "10px",
+                    padding: "8px 14px",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    whiteSpace: "nowrap",
+                    transition: "all 0.2s ease",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = isDarkMode
+                      ? "rgba(245, 158, 11, 0.25)"
+                      : "rgba(217, 119, 6, 0.2)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = isDarkMode
+                      ? "rgba(245, 158, 11, 0.15)"
+                      : "rgba(217, 119, 6, 0.12)";
+                  }}
+                >
+                  <span>📋</span>
+                  <span>Template & Guide</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("open-emailjs-settings", {
+                        detail: { tab: "email" },
+                      }),
+                    )
+                  }
+                  style={{
+                    background: isDarkMode ? "#f59e0b" : "#d97706",
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: "10px",
+                    padding: "8px 16px",
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    boxShadow: "0 2px 6px rgba(217, 119, 6, 0.3)",
+                    whiteSpace: "nowrap",
+                    transition: "opacity 0.2s ease",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.9")}
+                  onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+                >
+                  <span>⚙️</span>
+                  <span>Configure EmailJS</span>
+                </button>
+              </div>
             )}
           </div>
         )}

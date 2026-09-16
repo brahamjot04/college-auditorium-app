@@ -13,6 +13,10 @@ import { auth, db } from "./firebase";
 import { useAuth } from "./AuthContext";
 import { uploadToGitHub, fetchImageFromGitHub } from "./utils/github";
 import { sendGatePassEmail } from "./utils/emailService";
+import {
+  EMAIL_PASS_HTML_TEMPLATE,
+  EMAIL_TEMPLATE_VARIABLES,
+} from "./utils/emailPassTemplate";
 import ConfirmDiscardModal from "./ConfirmDiscardModal";
 
 function Navbar({ isDarkMode = false }) {
@@ -44,6 +48,8 @@ function Navbar({ isDarkMode = false }) {
   const [testRecipient, setTestRecipient] = useState("");
   const [isSendingTest, setIsSendingTest] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [copiedTemplate, setCopiedTemplate] = useState(false);
+  const [copiedVariable, setCopiedVariable] = useState(null);
 
   // Snapshot of saved Firestore settings for dirty checking and discarding unsaved edits
   const savedSettingsRef = useRef(null);
@@ -51,9 +57,9 @@ function Navbar({ isDarkMode = false }) {
 
   // Listen for trigger to open EmailJS settings modal (e.g. from Dashboard warning banner)
   useEffect(() => {
-    const handleOpenSettings = () => {
+    const handleOpenSettings = (e) => {
       if (isAdmin) {
-        setSettingsTab("email");
+        setSettingsTab(e?.detail?.tab || "email");
         setShowSettingsModal(true);
       }
     };
@@ -1406,6 +1412,7 @@ function Navbar({ isDarkMode = false }) {
                 borderBottom: navTheme.border,
                 display: "flex",
                 gap: "10px",
+                flexWrap: "wrap",
                 background: isDarkMode
                   ? "rgba(15, 23, 42, 0.45)"
                   : "rgba(248, 250, 252, 0.75)",
@@ -1481,6 +1488,42 @@ function Navbar({ isDarkMode = false }) {
               >
                 <span>🎨</span>
                 <span>Pass Branding & Logo</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSettingsTab("template")}
+                style={{
+                  background:
+                    settingsTab === "template"
+                      ? isDarkMode
+                        ? "linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)"
+                        : "linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)"
+                      : isDarkMode
+                        ? "rgba(255, 255, 255, 0.05)"
+                        : "rgba(0, 0, 0, 0.04)",
+                  border:
+                    settingsTab === "template"
+                      ? "1px solid rgba(59, 130, 246, 0.55)"
+                      : navTheme.border,
+                  color: settingsTab === "template" ? "#ffffff" : navTheme.textSecondary,
+                  borderRadius: "14px",
+                  padding: "8px 18px",
+                  fontWeight: settingsTab === "template" ? 700 : 600,
+                  fontSize: "0.85rem",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  transition: "all 0.2s ease",
+                  boxShadow:
+                    settingsTab === "template"
+                      ? "0 4px 14px rgba(37, 99, 235, 0.28)"
+                      : "none",
+                }}
+              >
+                <span>📄</span>
+                <span>Pass Template & Guide</span>
               </button>
             </div>
 
@@ -2182,6 +2225,441 @@ function Navbar({ isDarkMode = false }) {
                   </div>
                 </>
               )}
+
+                {/* TAB 3: PASS TEMPLATE & GUIDE */}
+                {settingsTab === "template" && (
+                  <>
+                    {/* Card 1: Setup Checklist */}
+                    <div
+                      style={{
+                        background: navTheme.cardBg,
+                        border: navTheme.border,
+                        borderRadius: "18px",
+                        padding: "18px 20px",
+                      }}
+                    >
+                      <div className="d-flex align-items-center gap-2 mb-2">
+                        <span style={{ fontSize: "1.1rem" }}>📋</span>
+                        <h6
+                          style={{
+                            margin: 0,
+                            fontWeight: 700,
+                            fontSize: "0.95rem",
+                            color: navTheme.textPrimary,
+                          }}
+                        >
+                          EmailJS Setup Checklist & Guide
+                        </h6>
+                      </div>
+                      <p
+                        style={{
+                          fontSize: "0.82rem",
+                          color: navTheme.textSecondary,
+                          marginBottom: "14px",
+                          lineHeight: 1.45,
+                        }}
+                      >
+                        Follow these steps to configure your gate pass template in your EmailJS account:
+                      </p>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: "10px",
+                          fontSize: "0.83rem",
+                        }}
+                      >
+                        <div className="d-flex align-items-start gap-2">
+                          <span
+                            style={{
+                              background: "#2563eb",
+                              color: "#ffffff",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              marginTop: "1px",
+                            }}
+                          >
+                            1
+                          </span>
+                          <span style={{ color: navTheme.textPrimary }}>
+                            Sign in to your{" "}
+                            <a
+                              href="https://dashboard.emailjs.com/"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                color: "#3b82f6",
+                                textDecoration: "underline",
+                                fontWeight: 600,
+                              }}
+                            >
+                              EmailJS Dashboard
+                            </a>{" "}
+                            and navigate to <strong>Email Templates</strong> &rarr; <strong>Create New Template</strong>.
+                          </span>
+                        </div>
+
+                        <div className="d-flex align-items-start gap-2">
+                          <span
+                            style={{
+                              background: "#2563eb",
+                              color: "#ffffff",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              marginTop: "1px",
+                            }}
+                          >
+                            2
+                          </span>
+                          <span style={{ color: navTheme.textPrimary }}>
+                            In the EmailJS template editor, switch to <strong>Source Code</strong> view by clicking the <code>&lt; &gt;</code> icon in the toolbar.
+                          </span>
+                        </div>
+
+                        <div className="d-flex align-items-start gap-2">
+                          <span
+                            style={{
+                              background: "#2563eb",
+                              color: "#ffffff",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              marginTop: "1px",
+                            }}
+                          >
+                            3
+                          </span>
+                          <span style={{ color: navTheme.textPrimary }}>
+                            Replace all template contents with the <strong>Gate Pass HTML Template</strong> below (click <strong>"Copy HTML Template"</strong>).
+                          </span>
+                        </div>
+
+                        <div className="d-flex align-items-start gap-2">
+                          <span
+                            style={{
+                              background: "#2563eb",
+                              color: "#ffffff",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              marginTop: "1px",
+                            }}
+                          >
+                            4
+                          </span>
+                          <span style={{ color: navTheme.textPrimary }}>
+                            Set the Email Subject to:{" "}
+                            <code
+                              style={{
+                                background: isDarkMode
+                                  ? "rgba(255,255,255,0.08)"
+                                  : "rgba(0,0,0,0.06)",
+                                padding: "2px 6px",
+                                borderRadius: "6px",
+                                fontFamily: "monospace",
+                                color: "#3b82f6",
+                              }}
+                            >
+                              🎟️ Gate Pass: {"{{event_name}}"} - Seat {"{{seat_label}}"}
+                            </code>
+                          </span>
+                        </div>
+
+                        <div className="d-flex align-items-start gap-2">
+                          <span
+                            style={{
+                              background: "#2563eb",
+                              color: "#ffffff",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              marginTop: "1px",
+                            }}
+                          >
+                            5
+                          </span>
+                          <span style={{ color: navTheme.textPrimary }}>
+                            Under <strong>Settings</strong> &rarr; <strong>Content</strong>, ensure <strong>To Email</strong> is set to{" "}
+                            <code>{"{{to_email}}"}</code> (or <code>{"{{email}}"}</code>) and <strong>To Name</strong> is set to{" "}
+                            <code>{"{{to_name}}"}</code>.
+                          </span>
+                        </div>
+
+                        <div className="d-flex align-items-start gap-2">
+                          <span
+                            style={{
+                              background: "#2563eb",
+                              color: "#ffffff",
+                              borderRadius: "50%",
+                              width: "20px",
+                              height: "20px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: "0.72rem",
+                              fontWeight: 700,
+                              flexShrink: 0,
+                              marginTop: "1px",
+                            }}
+                          >
+                            6
+                          </span>
+                          <span style={{ color: navTheme.textPrimary }}>
+                            Save the template, copy your <strong>Template ID</strong>, and paste it into the <strong>Email Delivery</strong> tab here.
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card 2: Template Variables Quick-Copy Pills */}
+                    <div
+                      style={{
+                        background: navTheme.cardBg,
+                        border: navTheme.border,
+                        borderRadius: "18px",
+                        padding: "18px 20px",
+                      }}
+                    >
+                      <div className="d-flex align-items-center justify-content-between mb-2">
+                        <div className="d-flex align-items-center gap-2">
+                          <span style={{ fontSize: "1.1rem" }}>🏷️</span>
+                          <h6
+                            style={{
+                              margin: 0,
+                              fontWeight: 700,
+                              fontSize: "0.95rem",
+                              color: navTheme.textPrimary,
+                            }}
+                          >
+                            Template Variables
+                          </h6>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: "0.75rem",
+                            color: navTheme.textSecondary,
+                          }}
+                        >
+                          Click any chip to copy variable tag
+                        </span>
+                      </div>
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+                          gap: "8px",
+                          marginTop: "12px",
+                        }}
+                      >
+                        {EMAIL_TEMPLATE_VARIABLES.map((v) => {
+                          const isCopied = copiedVariable === v.tag;
+                          return (
+                            <button
+                              key={v.tag}
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(v.tag);
+                                setCopiedVariable(v.tag);
+                                setTimeout(() => setCopiedVariable(null), 2000);
+                              }}
+                              style={{
+                                background: isCopied
+                                  ? "rgba(16, 185, 129, 0.15)"
+                                  : isDarkMode
+                                    ? "rgba(255, 255, 255, 0.04)"
+                                    : "rgba(0, 0, 0, 0.03)",
+                                border: isCopied
+                                  ? "1px solid rgba(16, 185, 129, 0.5)"
+                                  : navTheme.border,
+                                borderRadius: "10px",
+                                padding: "8px 12px",
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "flex-start",
+                                gap: "2px",
+                                cursor: "pointer",
+                                textAlign: "left",
+                                transition: "all 0.15s ease",
+                              }}
+                              onMouseEnter={(e) => {
+                                if (!isCopied) {
+                                  e.currentTarget.style.borderColor = "#3b82f6";
+                                  e.currentTarget.style.transform = "translateY(-1px)";
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                if (!isCopied) {
+                                  e.currentTarget.style.borderColor = "";
+                                  e.currentTarget.style.transform = "none";
+                                }
+                              }}
+                            >
+                              <div className="d-flex align-items-center justify-content-between w-100">
+                                <code
+                                  style={{
+                                    fontFamily: "monospace",
+                                    fontWeight: 700,
+                                    fontSize: "0.82rem",
+                                    color: isCopied ? "#10b981" : "#3b82f6",
+                                  }}
+                                >
+                                  {v.tag}
+                                </code>
+                                {isCopied && (
+                                  <span
+                                    style={{
+                                      fontSize: "0.7rem",
+                                      fontWeight: 700,
+                                      color: "#10b981",
+                                    }}
+                                  >
+                                    ✓ Copied
+                                  </span>
+                                )}
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: "0.72rem",
+                                  color: navTheme.textSecondary,
+                                  whiteSpace: "nowrap",
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  maxWidth: "100%",
+                                }}
+                              >
+                                {v.desc}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Card 3: Responsive HTML Template Code Viewer & Copy Button */}
+                    <div
+                      style={{
+                        background: navTheme.cardBg,
+                        border: navTheme.border,
+                        borderRadius: "18px",
+                        padding: "18px 20px",
+                      }}
+                    >
+                      <div className="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+                        <div>
+                          <div className="d-flex align-items-center gap-2">
+                            <span style={{ fontSize: "1.1rem" }}>⚡</span>
+                            <h6
+                              style={{
+                                margin: 0,
+                                fontWeight: 700,
+                                fontSize: "0.95rem",
+                                color: navTheme.textPrimary,
+                              }}
+                            >
+                              Gate Pass HTML Template
+                            </h6>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "0.76rem",
+                              color: navTheme.textSecondary,
+                              marginTop: "2px",
+                            }}
+                          >
+                            Responsive HTML layout with embedded QR code & inline styling
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(EMAIL_PASS_HTML_TEMPLATE);
+                            setCopiedTemplate(true);
+                            setTimeout(() => setCopiedTemplate(false), 2500);
+                          }}
+                          style={{
+                            background: copiedTemplate
+                              ? "#10b981"
+                              : "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: "10px",
+                            padding: "8px 16px",
+                            fontSize: "0.82rem",
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            boxShadow: copiedTemplate
+                              ? "0 3px 10px rgba(16, 185, 129, 0.35)"
+                              : "0 3px 10px rgba(37, 99, 235, 0.35)",
+                            transition: "all 0.2s ease",
+                          }}
+                        >
+                          <span>{copiedTemplate ? "✅" : "📋"}</span>
+                          <span>{copiedTemplate ? "Copied to Clipboard!" : "Copy HTML Template"}</span>
+                        </button>
+                      </div>
+
+                      <pre
+                        style={{
+                          background: isDarkMode ? "#090d16" : "#f1f5f9",
+                          border: isDarkMode
+                            ? "1px solid rgba(255, 255, 255, 0.08)"
+                            : "1px solid #cbd5e1",
+                          borderRadius: "12px",
+                          padding: "14px 16px",
+                          color: isDarkMode ? "#93c5fd" : "#1e3a8a",
+                          fontSize: "0.75rem",
+                          fontFamily: "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace",
+                          lineHeight: 1.5,
+                          maxHeight: "260px",
+                          overflow: "auto",
+                          margin: 0,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        <code>{EMAIL_PASS_HTML_TEMPLATE}</code>
+                      </pre>
+                    </div>
+                  </>
+                )}
             </div>
 
             {/* Modal Footer (Matching Manage Staff Footer) */}

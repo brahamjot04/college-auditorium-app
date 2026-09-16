@@ -325,12 +325,12 @@ function CheckInPage() {
       return;
     }
 
-    // Security Token Check
-    if (attendee.passToken && targetToken && attendee.passToken !== targetToken) {
+    // Security Token Check: require matching token whenever a passToken exists
+    if (attendee.passToken && (!targetToken || attendee.passToken !== targetToken)) {
       playWarningTone();
       setScanFeedback({
         type: "error",
-        message: "Invalid pass security token.",
+        message: "Invalid or missing pass security token.",
       });
       return;
     }

@@ -49,6 +49,18 @@ function Navbar({ isDarkMode = false }) {
   const savedSettingsRef = useRef(null);
   const tempBlobUrlRef = useRef(null);
 
+  // Listen for trigger to open EmailJS settings modal (e.g. from Dashboard warning banner)
+  useEffect(() => {
+    const handleOpenSettings = () => {
+      if (isAdmin) {
+        setSettingsTab("email");
+        setShowSettingsModal(true);
+      }
+    };
+    window.addEventListener("open-emailjs-settings", handleOpenSettings);
+    return () => window.removeEventListener("open-emailjs-settings", handleOpenSettings);
+  }, [isAdmin]);
+
   // Load system settings from Firestore
   useEffect(() => {
     if (!isAdmin) return;
@@ -100,10 +112,10 @@ function Navbar({ isDarkMode = false }) {
             });
           }
         } else {
-          // Defaults from working setup
-          const sId = "service_og3ze6m";
-          const tId = "template_xbboh6j";
-          const pKey = "PzNJuoItwBZtKTwOG";
+          // Defaults from environment or clean state
+          const sId = import.meta.env.VITE_EMAILJS_SERVICE_ID || "";
+          const tId = import.meta.env.VITE_EMAILJS_TEMPLATE_ID || "";
+          const pKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY || "";
           const oTitle = "Cultural Committee GNDEC";
           const sub = "GNDEC Main Auditorium, Ludhiana";
           const aColor = "#2563eb";
@@ -1582,7 +1594,7 @@ function Navbar({ isDarkMode = false }) {
                             </label>
                             <input
                               type="text"
-                              placeholder="e.g. service_og3ze6m"
+                              placeholder="e.g. service_xxxxxxx"
                               value={serviceId}
                               onChange={(e) => setServiceId(e.target.value)}
                               style={{
@@ -1613,7 +1625,7 @@ function Navbar({ isDarkMode = false }) {
                             </label>
                             <input
                               type="text"
-                              placeholder="e.g. template_xbboh6j"
+                              placeholder="e.g. template_xxxxxxx"
                               value={templateId}
                               onChange={(e) => setTemplateId(e.target.value)}
                               style={{
@@ -1644,7 +1656,7 @@ function Navbar({ isDarkMode = false }) {
                             </label>
                             <input
                               type="text"
-                              placeholder="e.g. PzNJuoItwBZtKTwOG"
+                              placeholder="e.g. your_public_key_here"
                               value={publicKey}
                               onChange={(e) => setPublicKey(e.target.value)}
                               style={{

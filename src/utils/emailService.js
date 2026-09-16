@@ -56,17 +56,11 @@ export const sendGatePassEmail = async ({
   qrDataUrl = "",
 }) => {
   const serviceId =
-    emailConfig.serviceId ||
-    import.meta.env.VITE_EMAILJS_SERVICE_ID ||
-    "service_og3ze6m";
+    emailConfig.serviceId || import.meta.env.VITE_EMAILJS_SERVICE_ID || "";
   const templateId =
-    emailConfig.templateId ||
-    import.meta.env.VITE_EMAILJS_TEMPLATE_ID ||
-    "template_xbboh6j";
+    emailConfig.templateId || import.meta.env.VITE_EMAILJS_TEMPLATE_ID || "";
   const publicKey =
-    emailConfig.publicKey ||
-    import.meta.env.VITE_EMAILJS_PUBLIC_KEY ||
-    "PzNJuoItwBZtKTwOG";
+    emailConfig.publicKey || import.meta.env.VITE_EMAILJS_PUBLIC_KEY || "";
 
   if (!serviceId || !templateId || !publicKey) {
     return {

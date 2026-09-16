@@ -2,6 +2,8 @@
 
 /**
  * Exports an array of objects to a CSV file and triggers an automatic browser download.
+ * Sanitizes against CSV Formula Injection (CWE-1236) to prevent malicious spreadsheet formula execution.
+ *
  * @param {string} filename - Desired download filename (e.g. "Event_Attendance.csv")
  * @param {Array<{ key: string, label: string }>} headers - Array of header definitions
  * @param {Array<Object>} rows - Array of data row objects
@@ -9,7 +11,16 @@
 export function exportToCsv(filename, headers, rows) {
   const escapeCell = (cell) => {
     if (cell === null || cell === undefined) return '""';
-    const cellStr = String(cell).replace(/"/g, '""');
+    let cellStr = String(cell);
+
+    // Neutralize CSV Formula Injection (CWE-1236):
+    // Prepend single quote if cell starts with dangerous spreadsheet formula triggers
+    if (/^[=+\-@\t\r]/.test(cellStr)) {
+      cellStr = "'" + cellStr;
+    }
+
+    // Escape internal quotes by doubling them
+    cellStr = cellStr.replace(/"/g, '""');
     return `"${cellStr}"`;
   };
 

@@ -6,21 +6,31 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
     function isSuperAdmin() {
-      return isSignedIn() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'superadmin';
+      return isSignedIn() && getUserData().role == 'superadmin';
     }
 
     function isAdmin() {
       return isSignedIn() && (
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+        getUserData().role == 'admin' ||
         isSuperAdmin()
+      );
+    }
+
+    function isApprovedStaff() {
+      return isSignedIn() && (
+        getUserData().role == 'user' ||
+        isAdmin()
       );
     }
 
     // 1. Users collection
     match /users/{userId} {
-      // Direct reading of own profile NEVER recurses!
+      // Direct reading of own profile:
       // Any user can read their own profile (by UID or matching verified email); Admins can read all profiles.
       allow get: if isSignedIn() && (
         request.auth.uid == userId ||
@@ -35,23 +45,24 @@ service cloud.firestore {
       );
 
       // Creation:
-      // Users can initialize their own profile; Admins can create profiles
+      // Strictly Admins can create profiles with 'user' or 'admin' roles (cannot create superadmin).
+      // Self-registration is completely blocked; uninvited sign-ins cannot create a profile.
       allow create: if isSignedIn() && (
-        request.auth.uid == userId ||
-        isAdmin()
+        isAdmin() &&
+        request.resource.data.role in ['user', 'admin']
       );
 
       // Updates:
-      // Super Admin can update any profile.
-      // Regular Admins can manage non-admin accounts (cannot demote to staff and cannot touch other admins).
-      // Users can update their own non-role fields.
+      // Super Admin can update any profile and any role.
+      // Regular Admins can manage non-admin accounts and promote up to 'admin' (cannot touch existing admins or assign superadmin).
+      // Users can update their own profile fields, but CANNOT alter their assigned role.
       allow update: if isSignedIn() && (
         isSuperAdmin() ||
         (
           isAdmin() &&
           resource.data.role != 'admin' &&
           resource.data.role != 'superadmin' &&
-          request.resource.data.role != 'user'
+          request.resource.data.role != 'superadmin'
         ) ||
         (
           request.auth.uid == userId &&
@@ -68,30 +79,39 @@ service cloud.firestore {
       // Anyone can read event details (needed for public gate passes and staff views)
       allow read: if true;
 
-      // Only Admins and Super Admins can create, edit, or delete events
+      // Both Admins and Super Admins can create, edit, archive, or delete events
       allow write: if isAdmin();
 
       // 3. Seats subcollection
       match /seats/{seatId} {
-        // Anyone with the pass link can view their seat info
-        allow read: if true;
-        // Staff and Admins can book and check in attendees
-        allow create, update: if isSignedIn();
+        // Public pass lookup: individual get allowed for attendees viewing their ticket pass
+        allow get: if true;
+
+        // Bulk listing: ONLY approved Staff and Admins can query/list all seats (prevents mass PII scraping)
+        allow list: if isApprovedStaff();
+
+        // Staff and Admins can book seats and check in attendees
+        allow create, update: if isApprovedStaff();
+
         // Only Admins can delete (release/unblock) seats
         allow delete: if isAdmin();
       }
 
       // 4. Audit Activity Logs subcollection
       match /activityLogs/{logId} {
-        allow read, create: if isSignedIn();
-        allow update, delete: if isAdmin();
+        // Staff can record check-in and booking activity
+        allow create: if isApprovedStaff();
+
+        // Only Admins can read, update, or delete audit logs
+        allow read, update, delete: if isAdmin();
       }
     }
 
     // 5. System Settings collection (EmailJS credentials & global branding defaults)
     match /system_settings/{settingId} {
-      // Anyone can read (needed for public gate pass branding and attendee emails)
-      allow read: if true;
+      // Protect credentials: only approved Staff & Admins can read system settings
+      allow read: if isApprovedStaff();
+
       // Only Admins and Super Admins can update system settings
       allow write: if isAdmin();
     }

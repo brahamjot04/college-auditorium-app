@@ -25,6 +25,7 @@ function Home() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [brandingEvent, setBrandingEvent] = useState(null);
   const [eventsError, setEventsError] = useState("");
+  const [isEmailConfigured, setIsEmailConfigured] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState(() => {
     const saved = sessionStorage.getItem("home_active_tab");
@@ -126,6 +127,41 @@ function Home() {
 
     return () => unsubscribe();
   }, [isAdmin]);
+
+  // Check EmailJS Configuration Status
+  useEffect(() => {
+    const unsubConfig = onSnapshot(
+      doc(db, "system_settings", "config"),
+      (snap) => {
+        const data = snap.exists() ? snap.data() : null;
+        const sId =
+          data?.email?.serviceId ||
+          import.meta.env.VITE_EMAILJS_SERVICE_ID ||
+          "";
+        const tId =
+          data?.email?.templateId ||
+          import.meta.env.VITE_EMAILJS_TEMPLATE_ID ||
+          "";
+        const pKey =
+          data?.email?.publicKey ||
+          import.meta.env.VITE_EMAILJS_PUBLIC_KEY ||
+          "";
+        const configured = Boolean(
+          sId.trim() && tId.trim() && pKey.trim(),
+        );
+        setIsEmailConfigured(configured);
+      },
+      (err) => {
+        console.warn("Could not check email config in Home:", err);
+        const sId = import.meta.env.VITE_EMAILJS_SERVICE_ID || "";
+        const tId = import.meta.env.VITE_EMAILJS_TEMPLATE_ID || "";
+        const pKey = import.meta.env.VITE_EMAILJS_PUBLIC_KEY || "";
+        setIsEmailConfigured(Boolean(sId.trim() && tId.trim() && pKey.trim()));
+      },
+    );
+
+    return () => unsubConfig();
+  }, []);
 
   // Close card action popover menu on outside click or Escape
   useEffect(() => {
@@ -452,6 +488,93 @@ function Home() {
 
       {/* MAIN CONTAINER */}
       <main className="container py-4 flex-grow-1">
+        {/* EMAILJS UNCONFIGURED WARNING BANNER */}
+        {!isEmailConfigured && (
+          <div
+            style={{
+              background: isDarkMode
+                ? "rgba(245, 158, 11, 0.12)"
+                : "rgba(254, 243, 199, 0.9)",
+              border: isDarkMode
+                ? "1px solid rgba(245, 158, 11, 0.35)"
+                : "1px solid rgba(245, 158, 11, 0.5)",
+              borderRadius: "18px",
+              padding: "16px 20px",
+              marginBottom: "24px",
+              boxShadow: isDarkMode
+                ? "0 10px 25px rgba(245, 158, 11, 0.08)"
+                : "0 10px 25px rgba(245, 158, 11, 0.12)",
+              display: "flex",
+              flexWrap: "wrap",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: "14px",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: "12px",
+                flex: "1 1 320px",
+              }}
+            >
+              <span style={{ fontSize: "1.4rem", lineHeight: 1 }}>⚠️</span>
+              <div>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "0.95rem",
+                    color: isDarkMode ? "#fbbf24" : "#92400e",
+                    marginBottom: "3px",
+                  }}
+                >
+                  Email Service Not Configured
+                </div>
+                <div
+                  style={{
+                    fontSize: "0.85rem",
+                    lineHeight: 1.45,
+                    color: isDarkMode ? "#fcd34d" : "#78350f",
+                  }}
+                >
+                  Attendee digital passes and confirmation emails will not be dispatched automatically because EmailJS credentials are not set up. <strong>All seat bookings, gate passes, and check-ins will continue to operate as intended.</strong>
+                </div>
+              </div>
+            </div>
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() =>
+                  window.dispatchEvent(new CustomEvent("open-emailjs-settings"))
+                }
+                style={{
+                  background: isDarkMode ? "#f59e0b" : "#d97706",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: "10px",
+                  padding: "8px 16px",
+                  fontSize: "0.82rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  boxShadow: "0 2px 6px rgba(217, 119, 6, 0.3)",
+                  whiteSpace: "nowrap",
+                  transition: "opacity 0.2s ease",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.9")}
+                onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+              >
+                <span>⚙️</span>
+                <span>Configure EmailJS</span>
+              </button>
+            )}
+          </div>
+        )}
+
         {/* PENDING APPROVALS ALERT (Admin only) */}
         {isAdmin && pendingUsers.length > 0 && (
           <div

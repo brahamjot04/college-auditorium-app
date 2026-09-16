@@ -81,38 +81,57 @@ class ErrorBoundary extends React.Component {
             </p>
 
             {this.state.error && (
-              <div
+              <details
                 style={{
-                  background: isDarkMode ? "rgba(0, 0, 0, 0.4)" : "#f1f5f9",
-                  border: isDarkMode
-                    ? "1px solid rgba(255, 255, 255, 0.08)"
-                    : "1px solid #e2e8f0",
-                  borderRadius: "12px",
-                  padding: "12px 14px",
-                  fontSize: "0.76rem",
-                  fontFamily: "monospace",
-                  textAlign: "left",
-                  overflowX: "auto",
                   marginBottom: "24px",
-                  maxHeight: "220px",
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
+                  textAlign: "left",
+                  cursor: "pointer",
                 }}
               >
-                <div style={{ color: "#ef4444", fontWeight: 700 }}>
-                  {this.state.error.toString()}
+                <summary
+                  style={{
+                    fontSize: "0.82rem",
+                    fontWeight: 600,
+                    color: isDarkMode ? "#93c5fd" : "#2563eb",
+                    outline: "none",
+                    userSelect: "none",
+                    marginBottom: "10px",
+                  }}
+                >
+                  View Technical Details
+                </summary>
+                <div
+                  style={{
+                    background: isDarkMode ? "rgba(0, 0, 0, 0.4)" : "#f1f5f9",
+                    border: isDarkMode
+                      ? "1px solid rgba(255, 255, 255, 0.08)"
+                      : "1px solid #e2e8f0",
+                    borderRadius: "12px",
+                    padding: "12px 14px",
+                    fontSize: "0.76rem",
+                    fontFamily: "monospace",
+                    textAlign: "left",
+                    overflowX: "auto",
+                    maxHeight: "220px",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  <div style={{ color: "#ef4444", fontWeight: 700 }}>
+                    {this.state.error.toString()}
+                  </div>
+                  {this.state.error.stack && (
+                    <div style={{ marginTop: "8px", color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.72rem" }}>
+                      {this.state.error.stack}
+                    </div>
+                  )}
+                  {this.state.errorInfo?.componentStack && (
+                    <div style={{ marginTop: "8px", color: "#38bdf8", fontSize: "0.72rem" }}>
+                      {this.state.errorInfo.componentStack}
+                    </div>
+                  )}
                 </div>
-                {this.state.error.stack && (
-                  <div style={{ marginTop: "8px", color: isDarkMode ? "#cbd5e1" : "#475569", fontSize: "0.72rem" }}>
-                    {this.state.error.stack}
-                  </div>
-                )}
-                {this.state.errorInfo?.componentStack && (
-                  <div style={{ marginTop: "8px", color: "#38bdf8", fontSize: "0.72rem" }}>
-                    {this.state.errorInfo.componentStack}
-                  </div>
-                )}
-              </div>
+              </details>
             )}
 
             <div style={{ display: "flex", gap: "10px", justifyContent: "center" }}>

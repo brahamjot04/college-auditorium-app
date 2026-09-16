@@ -38,8 +38,9 @@ export default function PassPage() {
     });
   };
 
-  // 1. Fetch Global System Branding Settings
+  // 1. Fetch Global System Branding Settings (Staff only; public passes use eventData branding)
   useEffect(() => {
+    if (!user) return;
     getDoc(doc(db, "system_settings", "config"))
       .then((snap) => {
         if (snap.exists()) {
@@ -47,7 +48,7 @@ export default function PassPage() {
         }
       })
       .catch((err) => console.warn("Could not load global branding:", err));
-  }, []);
+  }, [user]);
 
   // 2. Fetch Event & Listen to Seat in Real-Time
   useEffect(() => {

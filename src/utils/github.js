@@ -1,17 +1,40 @@
 // src/utils/github.js
-// Replicated from gndec-reports with auditorium-assets folder default
+// Client-side GitHub asset utility
+// SECURE IMPLEMENTATION: No secrets or Personal Access Tokens (PAT) exist in client code.
 
-const GITHUB_TOKEN =
-  import.meta.env.VITE_GITHUB_TOKEN || "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";
-const USERNAME = import.meta.env.VITE_GITHUB_USERNAME || "brahamjot04";
-const REPO_NAME = import.meta.env.VITE_GITHUB_REPO || "event-report-cc-app-data";
-const BRANCH = import.meta.env.VITE_GITHUB_BRANCH || "main";
+import { auth } from "../firebase";
 
-// Cache for loaded images to avoid repeated API calls
+const USERNAME = import.meta.env.VITE_GITHUB_USERNAME;
+const REPO_NAME = import.meta.env.VITE_GITHUB_REPO;
+const BRANCH = import.meta.env.VITE_GITHUB_BRANCH;
+
+// Cache for loaded images to avoid repeated network requests
 const imageCache = new Map();
 
 /**
- * Upload an image file to GitHub repository
+ * Returns direct public raw URL for an asset in the GitHub repository
+ * @param {string} path - Relative path in repository (e.g. "auditorium-assets/1234_logo.png")
+ * @returns {string} Public direct CDN URL
+ */
+export const getGitHubImageUrl = (path) => {
+  if (!path) return null;
+  if (
+    path.startsWith("http://") ||
+    path.startsWith("https://") ||
+    path.startsWith("data:") ||
+    path.startsWith("blob:")
+  ) {
+    return path;
+  }
+  // Route through the secure serverless asset proxy for private repository support
+  return `/api/asset?path=${encodeURIComponent(path)}`;
+};
+
+/**
+ * Upload an image file via the secure serverless backend endpoint (/api/upload).
+ * The server holds the GITHUB_TOKEN securely in environment variables.
+ * Attaches the logged-in user's Firebase Auth ID token for authorization.
+ *
  * @param {File} file
  * @param {string} fileName
  * @param {string} folder
@@ -32,90 +55,67 @@ export const uploadToGitHub = async (file, fileName, folder = "auditorium-assets
       });
 
     const content = await toBase64(file);
-    const sanitizedFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const path = `${folder}/${Date.now()}_${sanitizedFileName}`;
 
-    // 2. Upload via GitHub API
-    const response = await fetch(
-      `https://api.github.com/repos/${USERNAME}/${REPO_NAME}/contents/${path}`,
-      {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${GITHUB_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: `Upload auditorium branding asset: ${sanitizedFileName}`,
-          content: content,
-          branch: BRANCH,
-        }),
-      },
-    );
+    // 2. Obtain Firebase Auth ID token for authorization
+    const idToken = auth.currentUser ? await auth.currentUser.getIdToken() : "";
+    const headers = {
+      "Content-Type": "application/json",
+    };
+    if (idToken) {
+      headers["Authorization"] = `Bearer ${idToken}`;
+    }
 
-    const data = await response.json();
+    // 3. Delegate upload to secure serverless endpoint
+    const response = await fetch("/api/upload", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        content,
+        fileName,
+        folder,
+      }),
+    });
 
-    if (response.ok) {
-      console.log("Branding asset uploaded successfully to GitHub:", path);
-      return path;
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(
+        `Server returned HTTP ${response.status} (${response.statusText || "Unexpected response"})`
+      );
+    }
+
+    if (response.ok && data.path) {
+      console.log("Asset uploaded successfully to GitHub:", data.path);
+      return data.path;
     } else {
-      console.error("GitHub Upload Error:", data);
-      alert(`GitHub Upload Failed: ${data.message || "Unknown error"}`);
+      console.error("Upload error response:", data);
+      alert(`Upload Failed: ${data.error || "Server could not process upload."}`);
       return null;
     }
   } catch (error) {
-    console.error("Upload to GitHub failed:", error);
-    alert(`Upload failed: ${error.message}`);
+    console.error("Upload request failed:", error);
+    alert(`Upload request failed: ${error.message}`);
     return null;
   }
 };
 
 /**
- * Fetch an image from GitHub repository and convert to Data URL
+ * Fetch an image from GitHub repository and return a usable URL.
+ * Works seamlessly with public repositories without any tokens.
+ *
  * @param {string} path
- * @returns {Promise<string|null>} Base64 Data URL
+ * @returns {Promise<string|null>} Usable image URL
  */
 export const fetchImageFromGitHub = async (path) => {
   if (!path) return null;
 
-  // Check cache first
   if (imageCache.has(path)) {
     return imageCache.get(path);
   }
 
-  try {
-    const url = `https://api.github.com/repos/${USERNAME}/${REPO_NAME}/contents/${path}`;
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${GITHUB_TOKEN}`,
-        Accept: "application/vnd.github.v3+json",
-      },
-    });
-
-    if (!response.ok) {
-      console.error("Failed to fetch image from GitHub:", response.status);
-      return null;
-    }
-
-    const data = await response.json();
-    if (!data.content) return null;
-
-    const extension = path.split(".").pop().toLowerCase();
-    const mimeTypes = {
-      jpg: "image/jpeg",
-      jpeg: "image/jpeg",
-      png: "image/png",
-      gif: "image/gif",
-      webp: "image/webp",
-      svg: "image/svg+xml",
-    };
-    const mimeType = mimeTypes[extension] || "image/jpeg";
-    const cleanBase64 = data.content.replace(/\s/g, "");
-    const dataUrl = `data:${mimeType};base64,${cleanBase64}`;
-
-    imageCache.set(path, dataUrl);
-    return dataUrl;
-  } catch (error) {
-    console.error("Error fetching image from GitHub:", error);
-    return null;
-  }
+  // Direct public raw URL from GitHub
+  const rawUrl = getGitHubImageUrl(path);
+  imageCache.set(path, rawUrl);
+  return rawUrl;
 };

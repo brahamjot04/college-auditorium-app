@@ -18,6 +18,7 @@ import {
   EMAIL_TEMPLATE_VARIABLES,
 } from "./utils/emailPassTemplate";
 import ConfirmDiscardModal from "./ConfirmDiscardModal";
+import ConfirmLogoutModal from "./ConfirmLogoutModal";
 
 function Navbar({ isDarkMode = false }) {
   const { user, userName, isAdmin, isSuperAdmin } = useAuth();
@@ -26,6 +27,9 @@ function Navbar({ isDarkMode = false }) {
   const profileMenuRef = useRef(null);
   const [members, setMembers] = useState([]);
   const navigate = useNavigate();
+
+  // Logout Modal State
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   // Settings Modal State
   const [showSettingsModal, setShowSettingsModal] = useState(false);
@@ -281,13 +285,13 @@ function Navbar({ isDarkMode = false }) {
     .join("")
     .toUpperCase();
 
-  // Logout with user confirmation
-  const handleLogout = async () => {
-    const confirmed = window.confirm(
-      "Are you sure you want to log out of the Cultural Committee GNDEC Auditorium Portal?",
-    );
-    if (!confirmed) return;
+  // Logout with custom in-app confirmation modal
+  const handleLogout = () => {
+    setShowLogoutModal(true);
+  };
 
+  const handleConfirmLogout = async () => {
+    setShowLogoutModal(false);
     sessionStorage.removeItem("home_active_tab");
     navigate("/?logged_out=true", { replace: true });
     await signOut(auth);
@@ -2740,6 +2744,14 @@ function Navbar({ isDarkMode = false }) {
         isDarkMode={isDarkMode}
         title="Discard Settings Changes?"
         message="You have unsaved changes that will be lost, including any uploaded logo or modified credentials. Are you sure you want to discard your changes and close?"
+      />
+
+      {/* Custom In-App Confirm Logout Modal */}
+      <ConfirmLogoutModal
+        isOpen={showLogoutModal}
+        onClose={() => setShowLogoutModal(false)}
+        onConfirm={handleConfirmLogout}
+        isDarkMode={isDarkMode}
       />
     </>
   );

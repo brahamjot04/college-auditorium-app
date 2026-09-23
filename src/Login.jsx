@@ -40,6 +40,12 @@ function Login() {
       : "";
   });
   const [loading, setLoading] = useState(false);
+  const [isRedirectPending, setIsRedirectPending] = useState(() => {
+    return (
+      typeof window !== "undefined" &&
+      sessionStorage.getItem("auth_redirect_pending") === "true"
+    );
+  });
 
   // Theme state: defaults to light mode for new visitors, saved in localStorage
   const [isDarkMode, setIsDarkMode] = useState(() => {
@@ -96,8 +102,11 @@ function Login() {
           ["superadmin", "admin", "user"].includes(userData.role);
 
         if (isRoleApproved) {
+          sessionStorage.removeItem("auth_redirect_pending");
           navigate("/home");
         } else {
+          sessionStorage.removeItem("auth_redirect_pending");
+          setIsRedirectPending(false);
           // User does not have permissions -> force sign out and show error
           await signOut(auth);
           if (userData?.role === "pending") {
@@ -112,6 +121,8 @@ function Login() {
           setLoading(false);
         }
       } catch (err) {
+        sessionStorage.removeItem("auth_redirect_pending");
+        setIsRedirectPending(false);
         console.error("Permission check failed:", err);
         await signOut(auth);
         setError(
@@ -129,9 +140,14 @@ function Login() {
       .then(async (result) => {
         if (result && result.user) {
           await checkUserRoleAndRedirect(result.user);
+        } else {
+          sessionStorage.removeItem("auth_redirect_pending");
+          setIsRedirectPending(false);
         }
       })
       .catch((err) => {
+        sessionStorage.removeItem("auth_redirect_pending");
+        setIsRedirectPending(false);
         console.error("getRedirectResult error:", err);
         if (err.code === "auth/account-exists-with-different-credential") {
           setError(
@@ -233,9 +249,13 @@ function Login() {
       ) {
         setLoading(true);
         try {
+          sessionStorage.setItem("auth_redirect_pending", "true");
+          setIsRedirectPending(true);
           await signInWithRedirect(auth, provider);
           return;
         } catch (redirectErr) {
+          sessionStorage.removeItem("auth_redirect_pending");
+          setIsRedirectPending(false);
           console.error("Redirect fallback error:", redirectErr);
           setError("Google sign-in redirect failed: " + redirectErr.message);
           setLoading(false);
@@ -299,6 +319,52 @@ function Login() {
       : "0 10px 25px rgba(30, 58, 138, 0.1)",
     pillText: isDarkMode ? "#f8fafc" : "#1e293b",
   };
+
+  // If returning from Google redirect, show instant sleek loading screen instead of flashing the login form
+  if (isRedirectPending) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          background: theme.bg,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          color: theme.textPrimary,
+          fontFamily:
+            "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            width: "48px",
+            height: "48px",
+            borderRadius: "50%",
+            border: isDarkMode
+              ? "3px solid rgba(59, 130, 246, 0.2)"
+              : "3px solid rgba(37, 99, 235, 0.15)",
+            borderTopColor: isDarkMode ? "#60a5fa" : "#2563eb",
+            animation: "auth-spin 0.85s linear infinite",
+            marginBottom: "16px",
+          }}
+        />
+        <div style={{ fontWeight: 700, fontSize: "1.1rem" }}>
+          Auditorium Management Portal
+        </div>
+        <div
+          style={{
+            fontSize: "0.85rem",
+            color: isDarkMode ? "#94a3b8" : "#64748b",
+            marginTop: "6px",
+          }}
+        >
+          Signing in... Verifying authorization
+        </div>
+        <style>{`@keyframes auth-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
 
   return (
     <div

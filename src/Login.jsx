@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { auth, db } from "./firebase";
 import {
   signInWithEmailAndPassword,
@@ -55,12 +55,80 @@ function Login() {
     });
   };
 
+  // Centralized user role verification and routing
+  const checkUserRoleAndRedirect = useCallback(
+    async (user) => {
+      try {
+        setLoading(true);
+        const userDocRef = doc(db, "users", user.uid);
+        const userDoc = await getDoc(userDocRef);
+        let userData = userDoc.exists() ? userDoc.data() : null;
+
+        if (!userData) {
+          try {
+            const q = query(
+              collection(db, "users"),
+              where("email", "==", user.email),
+            );
+            const snap = await getDocs(q);
+            if (!snap.empty) {
+              userData = snap.docs[0].data();
+              try {
+                await setDoc(userDocRef, {
+                  ...userData,
+                  name:
+                    userData.name ||
+                    user.displayName ||
+                    user.email.split("@")[0],
+                });
+              } catch {
+                // Non-blocking
+              }
+            }
+          } catch {
+            // Non-admin users cannot query users collection under standard security rules
+          }
+        }
+
+        // STRICT PERMISSION CHECK: Must be superadmin, admin, or user
+        const isRoleApproved =
+          userData &&
+          ["superadmin", "admin", "user"].includes(userData.role);
+
+        if (isRoleApproved) {
+          navigate("/home");
+        } else {
+          // User does not have permissions -> force sign out and show error
+          await signOut(auth);
+          if (userData?.role === "pending") {
+            setError("Access Denied: Your account is still pending approval.");
+          } else if (userData?.role === "revoked") {
+            setError("Access Denied: Your account access has been revoked.");
+          } else {
+            setError(
+              "Access Denied: Your account does not have permission to access this system. Please contact an administrator.",
+            );
+          }
+          setLoading(false);
+        }
+      } catch (err) {
+        console.error("Permission check failed:", err);
+        await signOut(auth);
+        setError(
+          "Access Denied: Your account does not have permission to access this system. Please contact an administrator.",
+        );
+        setLoading(false);
+      }
+    },
+    [navigate],
+  );
+
   // Process redirect result if returning from Google redirect sign-in
   useEffect(() => {
     getRedirectResult(auth)
-      .then((result) => {
+      .then(async (result) => {
         if (result && result.user) {
-          setLoading(true);
+          await checkUserRoleAndRedirect(result.user);
         }
       })
       .catch((err) => {
@@ -69,78 +137,26 @@ function Login() {
           setError(
             "An account already exists with this email using a password. Please sign in with your email and password above, or enable account linking in Firebase Console.",
           );
+        } else if (err.code === "auth/unauthorized-domain") {
+          setError(
+            "This domain is not authorized in Firebase. Please add 'vercel.app' to Authorized Domains in Firebase Console > Authentication > Settings.",
+          );
         } else {
           setError("Google sign-in failed: " + err.message);
         }
+        setLoading(false);
       });
-  }, []);
+  }, [checkUserRoleAndRedirect]);
 
   // 1. Auto-redirect if already logged in AND strictly authorized
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
-        try {
-          const userDocRef = doc(db, "users", user.uid);
-          const userDoc = await getDoc(userDocRef);
-          let userData = userDoc.exists() ? userDoc.data() : null;
-
-          if (!userData) {
-            try {
-              const q = query(
-                collection(db, "users"),
-                where("email", "==", user.email),
-              );
-              const snap = await getDocs(q);
-              if (!snap.empty) {
-                userData = snap.docs[0].data();
-                try {
-                  await setDoc(userDocRef, {
-                    ...userData,
-                    name:
-                      userData.name ||
-                      user.displayName ||
-                      user.email.split("@")[0],
-                  });
-                } catch {
-                  // Non-blocking
-                }
-              }
-            } catch {
-              // Non-admin users cannot query users collection under standard security rules
-            }
-          }
-
-          // ONLY redirect if user has an active superadmin, admin, or user role
-          const isRoleApproved =
-            userData &&
-            ["superadmin", "admin", "user"].includes(userData.role);
-
-          if (isRoleApproved) {
-            navigate("/home");
-          } else {
-            // User does not have permissions -> force sign out and show error
-            await signOut(auth);
-            if (userData?.role === "pending") {
-              setError("Access Denied: Your account is still pending approval.");
-            } else if (userData?.role === "revoked") {
-              setError("Access Denied: Your account access has been revoked.");
-            } else {
-              setError(
-                "Access Denied: Your account does not have permission to access this system. Please contact an administrator.",
-              );
-            }
-          }
-        } catch (err) {
-          console.error("Permission check failed:", err);
-          await signOut(auth);
-          setError(
-            "Access Denied: Your account does not have permission to access this system. Please contact an administrator.",
-          );
-        }
+        await checkUserRoleAndRedirect(user);
       }
     });
     return () => unsubscribe();
-  }, [navigate]);
+  }, [checkUserRoleAndRedirect]);
 
   // 2. Handle Password Setup / Reset
   const handleResetPassword = async () => {
@@ -181,53 +197,7 @@ function Login() {
         password,
       );
       const user = userCredential.user;
-
-      // Step B: Check Firestore for valid role
-      const userDocRef = doc(db, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
-      let userData = userDoc.exists() ? userDoc.data() : null;
-
-      if (!userData) {
-        try {
-          const q = query(
-            collection(db, "users"),
-            where("email", "==", user.email),
-          );
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            userData = snap.docs[0].data();
-            await setDoc(userDocRef, {
-              ...userData,
-              name:
-                userData.name || user.displayName || user.email.split("@")[0],
-            });
-          }
-        } catch {
-          // Fallback query might be restricted by rules
-        }
-      }
-
-      // STRICT PERMISSION CHECK: Must be superadmin, admin, or user
-      const isRoleApproved =
-        userData && ["superadmin", "admin", "user"].includes(userData.role);
-
-      if (!isRoleApproved) {
-        await signOut(auth);
-        if (userData?.role === "pending") {
-          setError("Access Denied: Your account is still pending approval.");
-        } else if (userData?.role === "revoked") {
-          setError("Access Denied: Your account access has been revoked.");
-        } else {
-          setError(
-            "Access Denied: Your account does not have permission to access this system. Please contact an administrator.",
-          );
-        }
-        setLoading(false);
-        return;
-      }
-
-      // Step C: Authorized! Navigate to Home
-      navigate("/home");
+      await checkUserRoleAndRedirect(user);
     } catch (err) {
       console.error(err);
       if (err.code === "auth/invalid-credential") {
@@ -243,64 +213,16 @@ function Login() {
   const handleGoogleLogin = async () => {
     setError("");
     setMessage("");
-    setLoading(true);
-
+    // Crucial: do NOT call setLoading(true) before signInWithPopup,
+    // as it triggers a microtask state update that cancels the browser's transient user activation!
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: "select_account" });
 
     try {
       const result = await signInWithPopup(auth, provider);
-      const user = result.user;
-
-      // Check if user is registered in Firestore
-      const userDocRef = doc(db, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
-      let userData = null;
-
-      if (userDoc.exists()) {
-        userData = userDoc.data();
-      } else {
-        // Also check by email in case pre-registered by an admin
-        try {
-          const q = query(
-            collection(db, "users"),
-            where("email", "==", user.email),
-          );
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            userData = snap.docs[0].data();
-            // Save under current UID so future lookups are immediate
-            await setDoc(userDocRef, {
-              ...userData,
-              name:
-                userData.name || user.displayName || user.email.split("@")[0],
-            });
-          }
-        } catch {
-          // Fallback query might be restricted by rules
-        }
+      if (result && result.user) {
+        await checkUserRoleAndRedirect(result.user);
       }
-
-      // STRICT PERMISSION CHECK: Must be superadmin, admin, or user
-      const isRoleApproved =
-        userData && ["superadmin", "admin", "user"].includes(userData.role);
-
-      if (!isRoleApproved) {
-        await signOut(auth);
-        if (userData?.role === "revoked") {
-          setError("Access Denied: Your account access has been revoked.");
-        } else if (userData?.role === "pending") {
-          setError("Access Denied: Your account is still pending approval.");
-        } else {
-          setError(
-            "Access Denied: Your account does not have permission to access this system. Please contact an administrator.",
-          );
-        }
-        setLoading(false);
-        return;
-      }
-
-      navigate("/home");
     } catch (err) {
       console.error("Google sign-in error:", err);
       // If the popup is blocked by the browser, ad-blocker, or cross-origin restrictions,
@@ -309,6 +231,7 @@ function Login() {
         err.code === "auth/popup-blocked" ||
         err.code === "auth/cancelled-popup-request"
       ) {
+        setLoading(true);
         try {
           await signInWithRedirect(auth, provider);
           return;
@@ -323,6 +246,10 @@ function Login() {
       if (err.code === "auth/account-exists-with-different-credential") {
         setError(
           "An account already exists with this email using a password. Please sign in with your email and password above, or enable account linking in Firebase Console.",
+        );
+      } else if (err.code === "auth/unauthorized-domain") {
+        setError(
+          "This domain is not authorized in Firebase. Please add 'vercel.app' to Authorized Domains in Firebase Console > Authentication > Settings.",
         );
       } else if (err.code !== "auth/popup-closed-by-user") {
         setError("Google sign-in failed: " + err.message);

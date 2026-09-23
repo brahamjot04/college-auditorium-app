@@ -46,10 +46,15 @@ service cloud.firestore {
 
       // Creation:
       // Strictly Admins can create profiles with 'user' or 'admin' roles (cannot create superadmin).
-      // Self-registration is completely blocked; uninvited sign-ins cannot create a profile.
+      // Verified users can link/create their own UID profile with 'user' role matching their auth email.
       allow create: if isSignedIn() && (
-        isAdmin() &&
-        request.resource.data.role in ['user', 'admin']
+        (isAdmin() && request.resource.data.role in ['user', 'admin']) ||
+        (
+          request.auth.uid == userId &&
+          request.auth.token.email != null &&
+          request.resource.data.email == request.auth.token.email &&
+          request.resource.data.role == 'user'
+        )
       );
 
       // Updates:

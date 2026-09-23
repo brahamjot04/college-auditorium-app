@@ -1722,9 +1722,8 @@ function SeatingPage() {
           className="w-100"
           style={{
             overflowX: "auto",
+            WebkitOverflowScrolling: "touch",
             paddingBottom: "30px",
-            display: "flex",
-            justifyContent: "center",
           }}
         >
           <div

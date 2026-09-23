@@ -3,6 +3,8 @@ import { auth, db } from "./firebase";
 import {
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   sendPasswordResetEmail,
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -52,6 +54,26 @@ function Login() {
       return next;
     });
   };
+
+  // Process redirect result if returning from Google redirect sign-in
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result && result.user) {
+          setLoading(true);
+        }
+      })
+      .catch((err) => {
+        console.error("getRedirectResult error:", err);
+        if (err.code === "auth/account-exists-with-different-credential") {
+          setError(
+            "An account already exists with this email using a password. Please sign in with your email and password above, or enable account linking in Firebase Console.",
+          );
+        } else {
+          setError("Google sign-in failed: " + err.message);
+        }
+      });
+  }, []);
 
   // 1. Auto-redirect if already logged in AND strictly authorized
   useEffect(() => {
@@ -217,14 +239,16 @@ function Login() {
     }
   };
 
-  // 4. Handle Google Sign-In with Access Guard
+  // 4. Handle Google Sign-In with Access Guard & Redirect Fallback
   const handleGoogleLogin = async () => {
     setError("");
     setMessage("");
     setLoading(true);
 
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ prompt: "select_account" });
+
     try {
-      const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
       const user = result.user;
 
@@ -278,7 +302,24 @@ function Login() {
 
       navigate("/home");
     } catch (err) {
-      console.error(err);
+      console.error("Google sign-in error:", err);
+      // If the popup is blocked by the browser, ad-blocker, or cross-origin restrictions,
+      // seamlessly transition to redirect sign-in.
+      if (
+        err.code === "auth/popup-blocked" ||
+        err.code === "auth/cancelled-popup-request"
+      ) {
+        try {
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirectErr) {
+          console.error("Redirect fallback error:", redirectErr);
+          setError("Google sign-in redirect failed: " + redirectErr.message);
+          setLoading(false);
+          return;
+        }
+      }
+
       if (err.code === "auth/account-exists-with-different-credential") {
         setError(
           "An account already exists with this email using a password. Please sign in with your email and password above, or enable account linking in Firebase Console.",
